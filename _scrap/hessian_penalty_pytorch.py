@@ -5,7 +5,7 @@ TensorFlow Implementation (GPU + Multi-Layer): hessian_penalty_tf.py
 Simple Pure NumPy Implementation: hessian_penalty_np.py
 
 Simple use case where you want to apply the Hessian Penalty to the output of net w.r.t. net_input:
->>> from hessian_penalty_pytorch import hessian_penalty
+>>> from _scrap.hessian_penalty_pytorch import hessian_penalty
 >>> net = MyNeuralNet()
 >>> net_input = sample_input()
 >>> loss = hessian_penalty(net, z=net_input)  # Compute hessian penalty of net's output w.r.t. net_input
@@ -14,7 +14,7 @@ Simple use case where you want to apply the Hessian Penalty to the output of net
 If your network takes multiple inputs, simply supply them to hessian_penalty as you do in the net's forward pass. In the
 following example, we assume BigGAN.forward takes a second input argument "y". Note that we always take the Hessian
 Penalty w.r.t. the z argument supplied to hessian_penalty:
->>> from hessian_penalty_pytorch import hessian_penalty
+>>> from _scrap.hessian_penalty_pytorch import hessian_penalty
 >>> net = BigGAN()
 >>> z_input = sample_z_vector()
 >>> class_label = sample_class_label()

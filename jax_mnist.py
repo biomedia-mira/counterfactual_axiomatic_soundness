@@ -52,6 +52,8 @@ init_random_params, predict = stax.serial(
     Dense(1024), Relu,
     Dense(10), LogSoftmax)
 
+
+
 if __name__ == "__main__":
   rng = random.PRNGKey(0)
 
