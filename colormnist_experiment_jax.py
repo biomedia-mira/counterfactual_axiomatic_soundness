@@ -1,44 +1,34 @@
 import shutil
 from pathlib import Path
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional
 
+import flows
+import jax
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.autograd.functional
 import torch.autograd.functional
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
+from jax import grad, jit, partial, random, vmap
+from jax.experimental import optimizers, stax
+from jax.experimental.stax import Dense, Relu
+from jax.lax import stop_gradient
 from torch.utils.data.dataloader import DataLoader, DataLoader
 from torch.utils.tensorboard import SummaryWriter
-import jax
+
 from datasets.colormnist import Colorize, get_diagonal_class_conditioned_color_distribution, \
     get_uniform_class_conditioned_color_distribution, show_cm
 from datasets.confounded_dataset import CounfoundedDataset
-from jax.lax import stop_gradient
-from jax.experimental import stax
-from jax.experimental.stax import Dense, Relu, LogSoftmax
-from jax.experimental import optimizers
-
-import time
-import itertools
-
-import numpy.random as npr
-
-import jax.numpy as jnp
-from jax import jit, grad, random, vmap
-from jax.experimental import optimizers
-from jax.experimental import stax
-from jax.experimental.stax import Dense, Relu, LogSoftmax
-from jax.experimental import optimizers
-
-import flows
 
 
 def model(img_size: int, c_dim: int):
+    batch_size = 10
+    img_size = 5
+    c_dim = 3
+    inputs = jnp.ones((batch_size, img_size))
     rng = random.PRNGKey(0)
 
     def transform(rng, input_dim: int, output_dim: int):
@@ -60,11 +50,11 @@ def model(img_size: int, c_dim: int):
     def direct_fun(inputs: jnp.ndarray):
         inputs = vmap(lambda array: jnp.append(jnp.zeros(c_dim), jnp.ravel(array)), in_axes=0)(inputs)
         outputs, _ = _direct_fun(params, inputs)
-        return outputs[..., :c_dim], outputs[..., c_dim:]
+        return jax.nn.log_softmax(outputs[..., :c_dim], axis=-1), outputs[..., c_dim:]
 
     def inverse_fun(outputs: jnp.ndarray, shape):
         inputs, _ = _inverse_fun(params, outputs)
-        return jnp.reshape(inputs[..., c_dim:], (*inputs.shape[:2], *shape))
+        return jnp.reshape(inputs[..., c_dim:], (-1, *shape))
 
     def construct_virtual_outputs(c, z):
         output = jnp.concatenate((c, z), axis=-1)
@@ -72,30 +62,30 @@ def model(img_size: int, c_dim: int):
         virtual_outputs = jax.ops.index_update(virtual_outputs, jax.ops.index[..., :c_dim], jnp.eye(c_dim))
         return virtual_outputs
 
-    def forward_pass(params, batch):
+    def forward_pass(batch):
         inputs, _, _ = batch
         input_shape = inputs.shape[1:]
 
         c, z = direct_fun(inputs)
         virtual_outputs = construct_virtual_outputs(c, z)
-        virtual_inputs, _ = stop_gradient(inverse_fun(virtual_outputs, input_shape))
-        virtual_c, virtual_z = direct_fun(virtual_inputs)
 
-        return c, virtual_output_color
+        virtual_inputs = stop_gradient(
+            vmap(partial(inverse_fun, shape=input_shape), in_axes=1, out_axes=1)(virtual_outputs))
+        virtual_c, virtual_z = vmap(direct_fun, in_axes=1, out_axes=1)(virtual_inputs)
+
+        return c, z, virtual_c, virtual_z
 
     def loss(params, batch):
         inputs, targets, colors = batch
 
-        output = direct_fun(inputs)
-        c = output[..., -1]
+        c, z, virtual_c, virtual_z = forward_pass(batch)
 
-        x = jnp.repeat(output[..., jnp.newaxis, :], 10, axis=1)
-        b = jax.ops.index_update(x, jax.ops.index[..., -1], list(range(10)))
+        one_hot_targets = jnp.eye(c_dim)[targets]
+        virtual_targets = jnp.eye(c_dim)[jnp.array(range(c_dim))]
 
-        outputs = direct_fun(stop_gradient(inverse_fun(b)))
-
-        preds = predict(params, inputs)
-        return -jnp.mean(jnp.sum(preds * targets, axis=1))
+        loss = -jnp.mean(jnp.sum(c * one_hot_targets, axis=1))
+        virtual_loss = -jnp.mean(jnp.sum((virtual_c * virtual_targets), axis=-1))
+        return loss + virtual_loss
 
     opt_init, opt_update, get_params = optimizers.momentum(step_size=lambda x: 0.001, mass=0.9)
 
