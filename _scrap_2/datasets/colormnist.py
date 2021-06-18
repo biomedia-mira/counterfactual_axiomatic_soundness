@@ -2,8 +2,6 @@ from typing import Dict, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
-import torch.autograd.functional
 
 from datasets.confounded_dataset import Mechanism
 
@@ -59,8 +57,8 @@ def show_cm(cm: np.ndarray):
 class Colorize(Mechanism):
     def __init__(self, cm: np.ndarray, labels: np.ndarray):
         self.color = np.array(list(map(lambda label: np.random.choice(cm.shape[1], p=cm[label]), labels)))
-        self.colorize = torch.tensor(COLORS)
+        self.colorize = np.array(COLORS)
 
-    def __call__(self, index: int, image: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    def __call__(self, index: int, image: np.ndarray) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
         color = self.color[index]
-        return torch.cat([image] * 3, dim=0) * self.colorize[color].view(3, 1, 1), {'color': torch.tensor(color)}
+        return np.stack([image] * 3, axis=0) * self.colorize[color].reshape(3, 1, 1), {'color': np.array(color)}
