@@ -5,7 +5,7 @@ from tqdm import tqdm
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
-
+from datasets.jpeg import get_jpeg_encode_decode_fns
 MechanismFn = Callable[[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]], Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]]
 
 
@@ -42,7 +42,7 @@ def get_colorize_fn(cm: np.ndarray, labels: np.ndarray) -> MechanismFn:
 
 
 def apply_mechanisms_to_dataset(dataset: tf.data.Dataset, mechanisms: List[MechanismFn]) -> tf.data.Dataset:
-    dataset = dataset.map(lambda image, label: tf.cast(image, tf.float32, {'digit': label}))
+    dataset = dataset.map(lambda image, label: (tf.cast(image, tf.float32), {'digit': label}))
     dataset = dataset.enumerate().map(lambda index, data: (index, data[0], data[1]))
     for mechanism in mechanisms:
         dataset = dataset.map(mechanism, num_parallel_calls=tf.data.AUTOTUNE)
@@ -77,12 +77,13 @@ def create_uncounfounded_datasets(dataset: tf.data.Dataset, parent_dims: Dict[st
 
 def prepare_dataset(dataset: tf.data.Dataset, batch_size: int) -> tf.data.Dataset:
     dataset = dataset.cache()
-    dataset = dataset.shuffle(len(dataset))
+    dataset = dataset.shuffle(buffer_size=60000, reshuffle_each_iteration=True)
     dataset = dataset.batch(batch_size)
+    # encode_fn, decode_fn = get_jpeg_encode_decode_fns(max_seq_len=300, block_size=(8, 8))
+    # dataset = dataset.apply(lambda x: encode_fn(x)[0])
     dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
     dataset = tfds.as_numpy(dataset)
     return dataset
-
 
 
 def create_confounded_mnist_dataset(batch_size: int):
@@ -97,7 +98,9 @@ def create_confounded_mnist_dataset(batch_size: int):
     ds_train = apply_mechanisms_to_dataset(ds_train, [colorize_fun])
     unconfounded_datasets, marginals = create_uncounfounded_datasets(ds_train, parent_dims)
 
-    ds = prepare_dataset(ds_train, batch_size)
+    ds = tf.data.Dataset.zip({'joint': ds_train, **unconfounded_datasets})
+
+    ds = prepare_dataset(ds, batch_size)
 
     for i, j, k in ds:
         print('as')

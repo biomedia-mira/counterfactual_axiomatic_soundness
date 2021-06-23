@@ -78,7 +78,8 @@ def seq_to_dense(seq: List[tf.Tensor], img_shape: tf.TensorShape) -> tf.Tensor:
     return tf.map_fn(_seq_to_dense, seq, fn_output_signature=tf.TensorSpec(shape=img_shape))
 
 
-def create_jpeg_encoding_fn(max_seq_len: int, block_size: Tuple[int, int] = (8, 8), quality: float = 50., chroma_subsample: bool = True):
+def get_jpeg_encode_decode_fns(max_seq_len: int, block_size: Tuple[int, int] = (8, 8), quality: float = 50.,
+                               chroma_subsample: bool = True):
     assert block_size == (8, 8)
     bs = block_size[0] * block_size[1]
     zigzag_order, reverse_zigzag_order = zigzag(*block_size)
@@ -86,13 +87,13 @@ def create_jpeg_encoding_fn(max_seq_len: int, block_size: Tuple[int, int] = (8, 
     t_chroma_tf = tf.reshape(tf.convert_to_tensor(t_chroma, dtype=tf.float32), (1, 1, 1, 8, 8))
 
     c = 2 if chroma_subsample else 1
-    chroma_slope = tf.convert_to_tensor([c, c, 1, 1], dtype=tf.float32)
-    u_offset = tf.convert_to_tensor([0, 0, bs, 1], dtype=tf.float32)
-    v_offset = tf.convert_to_tensor([0, 0, 2 * bs, 1], dtype=tf.float32)
+    chroma_slope = tf.convert_to_tensor([1, c, c, 1], dtype=tf.float32)
+    u_offset = tf.convert_to_tensor([bs, 0, 0, 1], dtype=tf.float32)
+    v_offset = tf.convert_to_tensor([2 * bs, 0, 0, 1], dtype=tf.float32)
 
     def get_padding(dim_len: int, block_len: int) -> Tuple[int, int]:
         block_len = block_len * 2 if chroma_subsample else block_len
-        total_pad = int((dim_len // block_len + dim_len % block_len) * block_len - dim_len)
+        total_pad = int((dim_len // block_len + 1) * block_len - dim_len)
         return total_pad // 2, total_pad // 2 + total_pad % 2
 
     def pad(image: tf.Tensor) -> tf.Tensor:
@@ -106,9 +107,11 @@ def create_jpeg_encoding_fn(max_seq_len: int, block_size: Tuple[int, int] = (8, 
         dct_blocks = dct_2d(patches)
         dct_blocks = tf.round(dct_blocks / quantization_matrix)
         dct_img = tf.gather(tf.reshape(dct_blocks, (*dct_blocks.shape[:-2], bs)), zigzag_order, axis=-1)
+        dct_img = tf.transpose(dct_img, perm=(0, 3, 1, 2))
         return dct_img
 
     def dct_dequantization(dct_img: tf.Tensor, img_shape: tf.TensorShape, quantization_matrix: tf.Tensor) -> tf.Tensor:
+        dct_img = tf.transpose(dct_img, perm=(0, 2, 3, 1))
         dct_blocks = tf.reshape(tf.gather(dct_img, reverse_zigzag_order, axis=-1), (*dct_img.shape[:-1], *block_size))
         dct_blocks = dct_blocks * tf.reshape(quantization_matrix, block_size)
         patches = idct_2d(dct_blocks)
@@ -125,8 +128,8 @@ def create_jpeg_encoding_fn(max_seq_len: int, block_size: Tuple[int, int] = (8, 
     def decode_sequence(dense_dct_seq: tf.Tensor, luma_dct_img_shape: tf.TensorShape,
                         chroma_dct_img_shape: tf.TensorShape) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         dct_seq = tf.RaggedTensor.from_tensor(dense_dct_seq, padding=[-1, -1, -1, -1])
-        y_dct_seq = tf.ragged.boolean_mask(dct_seq, dct_seq[..., 2] < bs)
-        u_dct_seq = tf.ragged.boolean_mask(dct_seq, tf.logical_and(dct_seq[..., 2] >= bs, dct_seq[..., 2] < 2 * bs))
+        y_dct_seq = tf.ragged.boolean_mask(dct_seq, dct_seq[..., 0] < bs)
+        u_dct_seq = tf.ragged.boolean_mask(dct_seq, tf.logical_and(dct_seq[..., 0] >= bs, dct_seq[..., 0] < 2 * bs))
         u_dct_seq = (u_dct_seq - u_offset) / chroma_slope
         v_dct_seq = tf.ragged.boolean_mask(dct_seq, dct_seq[..., 2] >= 2 * bs)
         v_dct_seq = (v_dct_seq - v_offset) / chroma_slope
@@ -167,14 +170,13 @@ def create_jpeg_encoding_fn(max_seq_len: int, block_size: Tuple[int, int] = (8, 
 
     return jpeg_encode, jpeg_decode
 
-
-image = misc.face()
-plt.imshow(image)
-plt.show()
-encode, decode = create_jpeg_encoding_fn(max_seq_len=50000, quality=20)
-tf_image = tf.convert_to_tensor(np.expand_dims(image, axis=0), dtype=tf.float32)
-# tf_image = tf.random.uniform((10, 17, 16, 3)) * 255
-
+# image = misc.face()
+# plt.imshow(image)
+# plt.show()
+# encode, decode = get_jpeg_encode_decode_fns(max_seq_len=300, quality=20)
+# tf_image = tf.convert_to_tensor(np.expand_dims(image, axis=0), dtype=tf.float32)
+# # tf_image = tf.random.uniform((10, 17, 16, 3)) * 255
+#
 # ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=True, as_supervised=True)
 #
 # l = []
@@ -184,6 +186,6 @@ tf_image = tf.convert_to_tensor(np.expand_dims(image, axis=0), dtype=tf.float32)
 #     l.append(image)
 #
 # tf_image = tf.cast(tf.repeat(tf.convert_to_tensor(l), 3, axis=-1), tf.float32)
-dec = decode(*encode(tf_image))
-plt.imshow(np.clip(dec.numpy()[0], a_min=0, a_max=255).astype(np.int32))
-plt.show()
+# dec = decode(*encode(tf_image))
+# plt.imshow(np.clip(dec.numpy()[0], a_min=0, a_max=255).astype(np.int32))
+# plt.show()

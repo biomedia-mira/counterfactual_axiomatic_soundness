@@ -6,8 +6,37 @@ import jax.numpy as jnp
 import numpy as np
 from jax import jit, vmap, partial
 from jax.experimental import stax
-from jax.experimental.stax import Dense, Relu, GeneralConv, LeakyRelu, Gelu
+from jax.experimental.stax import Dense, Relu, GeneralConv, LeakyRelu, Gelu, elementwise
 from jax.scipy.ndimage import map_coordinates
+
+Conv = functools.partial(GeneralConv, ('NCHW', 'HWIO', 'NCHW'))
+
+
+
+
+
+def mixer_layer(hidden_size_mlp1: int, ):
+    def transpose(axes: Tuple[int, ...]):
+        _init_fun = lambda rng, input_shape: (tuple(input_shape[axis] for axis in axes), ())
+        _apply_fun = lambda params, inputs, **kwargs: jnp.transpose(inputs, axes=axes)
+        return _init_fun, _apply_fun
+
+    mlp1 = (transpose(axes=(0, 2, 1)), Dense(10), Gelu, Dense(10), transpose(axes=(0, 2, 1)))
+    mlp2 = (Dense(10), Gelu, Dense(10))
+    mlp1_init_fun, mlp1_apply_fun = stax.serial(*mlp1)
+    mlp2_init_fun, mlp2_apply_fun = stax.serial(*mlp2)
+
+    def init_fun(rng: jnp.ndarray, input_shape: Tuple[int, ...]):
+        output_shape, (w1, b1) = mlp1_init_fun(rng, input_shape)
+        output_shape, (w2, b2) = mlp2_init_fun(rng, output_shape)
+        return output_shape, (w1, b1, w2, b2)
+
+    def apply_fun(params, inputs, **kwargs):
+        w1, b1, w2, b2 = params
+        outputs_mlp1 + inputs + mlp1_apply_fun((w1, b1), inputs)
+        return outputs_mlp1 mlp2_apply_fun((w2, b2), outputs_mlp1)
+
+    return init_fun, apply_fun
 
 
 def apply_fun_n_times(f: Callable, n: int) -> Any:
@@ -20,11 +49,8 @@ def cumprod(array):
 
 # KL estimator
 def kl_estimator(layer_sizes: Tuple[int, ...] = (100, 100)):
-    layers = []
-    for layer_size in layer_sizes:
-        layers.append(Dense(layer_size))
-        layers.append(Relu)
-    layers.append(Dense(1))
+    layers = (Dense(), Gelu, Dense())
+
     net_init_fun, net_apply_fun = stax.serial(*layers)
 
     def init_fun(rng: jnp.ndarray, input_shape: Tuple[int, ...]):
