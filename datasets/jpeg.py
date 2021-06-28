@@ -1,14 +1,11 @@
-from typing import Tuple, List
+import itertools
+from typing import Callable, List, Tuple
 
 import numpy as np
 import tensorflow as tf
-import itertools
-from functools import partial
 
-from scipy import misc
-import imageio
-import matplotlib.pyplot as plt
-import tensorflow_datasets as tfds
+EncodeFn = Callable[[tf.Tensor], Tuple[tf.Tensor, tf.TensorShape, tf.TensorShape, tf.TensorShape, tf.TensorShape]]
+DecodeFn = Callable[[tf.Tensor, tf.TensorShape, tf.TensorShape, tf.TensorShape, tf.TensorShape], tf.Tensor]
 
 t_luma = [16, 11, 10, 16, 24, 40, 51, 61,
           12, 12, 14, 19, 26, 58, 60, 55,
@@ -72,14 +69,19 @@ def dense_to_seq(dct_img: tf.Tensor) -> tf.Tensor:
 
 def seq_to_dense(seq: List[tf.Tensor], img_shape: tf.TensorShape) -> tf.Tensor:
     def _seq_to_dense(x: tf.Tensor) -> tf.Tensor:
-        return tf.sparse.to_dense(
-            tf.SparseTensor(dense_shape=img_shape, indices=tf.cast(x[..., :-1], tf.int64), values=x[..., -1]))
+        indices, values = tf.cast(x[..., :-1], dtype=tf.int64), x[..., -1]
+        _, assignments = tf.raw_ops.UniqueV2(x=indices, axis=(0,))
+        order = tf.argsort(assignments)
+        new_values = tf.math.segment_sum(tf.gather(values, order), tf.gather(assignments, order))
+        new_indices = tf.gather(indices, tf.unique(assignments)[0])
+        return tf.sparse.to_dense(tf.sparse.reorder(
+            tf.SparseTensor(dense_shape=img_shape, indices=new_indices, values=new_values)))
 
     return tf.map_fn(_seq_to_dense, seq, fn_output_signature=tf.TensorSpec(shape=img_shape))
 
 
 def get_jpeg_encode_decode_fns(max_seq_len: int, block_size: Tuple[int, int] = (8, 8), quality: float = 50.,
-                               chroma_subsample: bool = True):
+                               chroma_subsample: bool = True) -> Tuple[EncodeFn, DecodeFn]:
     assert block_size == (8, 8)
     bs = block_size[0] * block_size[1]
     zigzag_order, reverse_zigzag_order = zigzag(*block_size)
@@ -131,7 +133,7 @@ def get_jpeg_encode_decode_fns(max_seq_len: int, block_size: Tuple[int, int] = (
         y_dct_seq = tf.ragged.boolean_mask(dct_seq, dct_seq[..., 0] < bs)
         u_dct_seq = tf.ragged.boolean_mask(dct_seq, tf.logical_and(dct_seq[..., 0] >= bs, dct_seq[..., 0] < 2 * bs))
         u_dct_seq = (u_dct_seq - u_offset) / chroma_slope
-        v_dct_seq = tf.ragged.boolean_mask(dct_seq, dct_seq[..., 2] >= 2 * bs)
+        v_dct_seq = tf.ragged.boolean_mask(dct_seq, dct_seq[..., 0] >= 2 * bs)
         v_dct_seq = (v_dct_seq - v_offset) / chroma_slope
         y_dct_img = seq_to_dense(y_dct_seq, luma_dct_img_shape)
         u_dct_img = seq_to_dense(u_dct_seq, chroma_dct_img_shape)
@@ -140,6 +142,7 @@ def get_jpeg_encode_decode_fns(max_seq_len: int, block_size: Tuple[int, int] = (
 
     def jpeg_encode(image: tf.Tensor) -> \
             Tuple[tf.Tensor, tf.TensorShape, tf.TensorShape, tf.TensorShape, tf.TensorShape]:
+        assert image.shape.is_fully_defined()
         yuv_image = pad(tf.image.rgb_to_yuv(image))
         y, u, v = tf.split(yuv_image, num_or_size_splits=3, axis=-1)
         if chroma_subsample:
@@ -156,6 +159,7 @@ def get_jpeg_encode_decode_fns(max_seq_len: int, block_size: Tuple[int, int] = (
 
     def jpeg_decode(dense_dct_seq: tf.Tensor, luma_shape: tf.TensorShape, chroma_shape: tf.TensorShape,
                     luma_dct_shape: tf.TensorShape, chroma_dct_shape: tf.TensorShape) -> tf.Tensor:
+        assert dense_dct_seq.shape.is_fully_defined()
         y_dct_img, u_dct_img, v_dct_img = decode_sequence(dense_dct_seq, luma_dct_shape, chroma_dct_shape)
         y = dct_dequantization(y_dct_img, luma_shape, t_luma_tf)
         u = dct_dequantization(u_dct_img, chroma_shape, t_chroma_tf)
@@ -169,23 +173,3 @@ def get_jpeg_encode_decode_fns(max_seq_len: int, block_size: Tuple[int, int] = (
         return tf.image.yuv_to_rgb(yuv_image)
 
     return jpeg_encode, jpeg_decode
-
-# image = misc.face()
-# plt.imshow(image)
-# plt.show()
-# encode, decode = get_jpeg_encode_decode_fns(max_seq_len=300, quality=20)
-# tf_image = tf.convert_to_tensor(np.expand_dims(image, axis=0), dtype=tf.float32)
-# # tf_image = tf.random.uniform((10, 17, 16, 3)) * 255
-#
-# ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=True, as_supervised=True)
-#
-# l = []
-# for i, (image, _) in enumerate(iter(ds_train)):
-#     if i == 10:
-#         break
-#     l.append(image)
-#
-# tf_image = tf.cast(tf.repeat(tf.convert_to_tensor(l), 3, axis=-1), tf.float32)
-# dec = decode(*encode(tf_image))
-# plt.imshow(np.clip(dec.numpy()[0], a_min=0, a_max=255).astype(np.int32))
-# plt.show()

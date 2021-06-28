@@ -1,11 +1,13 @@
 import itertools
-from typing import Tuple, Dict, Callable, List, Generator, Any
-from tqdm import tqdm
+from functools import partial
+from typing import Callable, Dict, List, Tuple
 
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
+
 from datasets.jpeg import get_jpeg_encode_decode_fns
+
 MechanismFn = Callable[[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]], Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]]
 
 
@@ -49,7 +51,7 @@ def apply_mechanisms_to_dataset(dataset: tf.data.Dataset, mechanisms: List[Mecha
     return dataset
 
 
-def create_uncounfounded_datasets(dataset: tf.data.Dataset, parent_dims: Dict[str, int]) -> Tuple[
+def create_unconfounded_datasets(dataset: tf.data.Dataset, parent_dims: Dict[str, int]) -> Tuple[
     Dict[str, tf.data.Dataset], Dict[str, np.ndarray]]:
     tmp = [item[-1] for item in dataset.as_numpy_iterator()]
     parents = {key: np.array([item[key] for item in tmp]) for key in tmp[0].keys()}
@@ -75,20 +77,30 @@ def create_uncounfounded_datasets(dataset: tf.data.Dataset, parent_dims: Dict[st
     return datasets, marginals
 
 
-def prepare_dataset(dataset: tf.data.Dataset, batch_size: int) -> tf.data.Dataset:
+def prepare_dataset(dataset: tf.data.Dataset,
+                    batch_size: int,
+                    max_seq_len: int,
+                    image_shape: Tuple[int, int, int]
+                    ) -> Tuple[tf.data.Dataset, Callable[[tf.Tensor], tf.Tensor]]:
+    encode_fn, _decode_fn = get_jpeg_encode_decode_fns(max_seq_len=max_seq_len, block_size=(8, 8))
+    dummy = tf.convert_to_tensor(np.expand_dims(np.zeros(image_shape, dtype=np.float32), axis=0))
+    _, luma_shape, chroma_shape, luma_dct_shape, chroma_dct_shape = encode_fn(dummy)
+    decode_fn = partial(_decode_fn, luma_shape=luma_shape, chroma_shape=chroma_shape,
+                        luma_dct_shape=luma_dct_shape, chroma_dct_shape=chroma_dct_shape)
+
     dataset = dataset.cache()
     dataset = dataset.shuffle(buffer_size=60000, reshuffle_each_iteration=True)
-    dataset = dataset.batch(batch_size)
-    # encode_fn, decode_fn = get_jpeg_encode_decode_fns(max_seq_len=300, block_size=(8, 8))
-    # dataset = dataset.apply(lambda x: encode_fn(x)[0])
+    dataset = dataset.batch(batch_size, drop_remainder=True)
+    dataset = dataset.map(lambda d: {key: (encode_fn(value[1])[0], value[2]) for key, value in d.items()})
     dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
     dataset = tfds.as_numpy(dataset)
-    return dataset
+    return dataset, decode_fn
 
 
 def create_confounded_mnist_dataset(batch_size: int):
     ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=True, as_supervised=True)
     parent_dims = {'digit': 10, 'color': 10}
+
     train_targets = np.array([y for x, y in ds_train.as_numpy_iterator()])
     test_targets = np.array([y for x, y in ds_train.as_numpy_iterator()])
 
@@ -96,20 +108,16 @@ def create_confounded_mnist_dataset(batch_size: int):
     colorize_fun = get_colorize_fn(colorize_cm, train_targets)
 
     ds_train = apply_mechanisms_to_dataset(ds_train, [colorize_fun])
-    unconfounded_datasets, marginals = create_uncounfounded_datasets(ds_train, parent_dims)
+    unconfounded_datasets, marginals = create_unconfounded_datasets(ds_train, parent_dims)
 
-    ds = tf.data.Dataset.zip({'joint': ds_train, **unconfounded_datasets})
-
-    ds = prepare_dataset(ds, batch_size)
-
-    for i, j, k in ds:
-        print('as')
-
-    # def data_stream() -> Generator[Any, None, None]:
-    #     for inputs in tqdm(zip(ds_train, *unconfounded_datasets.values())):
-    #         yield {'joint': inputs[0], **{key: inputs[i] for i, key in enumerate(unconfounded_datasets.keys())}}
-
-    return 1
+    dataset = tf.data.Dataset.zip({'joint': ds_train, **unconfounded_datasets})
+    dataset, decode_fn = prepare_dataset(dataset, batch_size, 300, (28, 28, 3))
+    return dataset
 
 
-a = create_confounded_mnist_dataset(16)
+dataset_ = create_confounded_mnist_dataset(16)
+print(1)
+a = iter(dataset_).__next__()
+seq = a['joint'][0]
+
+
