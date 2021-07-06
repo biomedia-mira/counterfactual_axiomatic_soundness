@@ -1,5 +1,4 @@
-import functools
-from typing import Tuple, Dict, cast, Callable, Union
+from typing import Callable, Dict, Tuple, Union, cast
 
 import jax
 import jax.numpy as jnp
@@ -7,26 +6,30 @@ import jax.ops
 import numpy as np
 from jax import jit
 from jax.experimental import optimizers
-from jax.experimental import stax
 from jax.experimental.optimizers import OptimizerState
-from jax.experimental.stax import GeneralConv, Relu, Dense, Flatten, LogSoftmax
 from jax.lax import stop_gradient
-from model.components import mechanism, kl_estimator
-from trainer.types import InitFn, ApplyFn, InitOptimizerFn, UpdateFn, Tree, Params
 
-Conv = functools.partial(GeneralConv, ('NCHW', 'HWIO', 'NCHW'))
+from model.components import classifier, f_divergence_estimator, mechanism
+from trainer.training import ApplyFn, InitFn, InitOptimizerFn, Params, Tree, UpdateFn
+
+
+def calc_accuracy(pred: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
+    return cast(jnp.ndarray, jnp.equal(jnp.argmax(pred, axis=-1), jnp.argmax(target, axis=-1)))
+
+
+def calc_cross_entropy(pred: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
+    return cast(jnp.ndarray, -jnp.mean(jnp.sum(pred * target, axis=-1)))
 
 
 def build_model(parent_dims: Dict[str, int],
-                marginals: Dict[str, np.ndarray]) -> Tuple[InitFn, ApplyFn, InitOptimizerFn]:
+                marginals: Dict[str, np.ndarray],
+                seq_shape: Tuple[int, int]) -> Tuple[InitFn, ApplyFn, InitOptimizerFn]:
     parent_names = list(parent_dims.keys())
     components: Dict[str, Dict[str, Tuple[Callable, Callable]]] = {key: {} for key in parent_names}
     for parent_name_, dim in parent_dims.items():
-        components[parent_name_]['classifier'] = stax.serial(Conv(10, (3, 3)), Relu,
-                                                             Conv(10, (3, 3)), Relu,
-                                                             Flatten, Dense(dim), LogSoftmax)
-        components[parent_name_]['divergence'] = kl_estimator()
-        components[parent_name_]['mechanism'] = mechanism(parent_name_, parent_dims)
+        components[parent_name_]['classifier'] = classifier(dim, seq_shape)
+        components[parent_name_]['divergence'] = f_divergence_estimator(seq_shape)
+        components[parent_name_]['mechanism'] = mechanism(parent_name_, parent_dims, seq_shape)
 
     def init_fun(rng: jnp.ndarray, input_shape: Tuple[int, ...]) -> Params:
         params: Params = {key: {} for key in parent_names}
@@ -35,14 +38,6 @@ def build_model(parent_dims: Dict[str, int],
                 _, params[parent_name][component] = _init_fun(rng, input_shape)
 
         return params
-
-    @jit
-    def calc_accuracy(pred: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
-        return cast(jnp.ndarray, jnp.equal(jnp.argmax(pred, axis=-1), jnp.argmax(target, axis=-1)))
-
-    @jit
-    def calc_cross_entropy(pred: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
-        return cast(jnp.ndarray, -jnp.mean(jnp.sum(pred * target, axis=-1)))
 
     def classifiers_step(params: Params, inputs: Tree[jnp.ndarray]) -> Tuple[jnp.ndarray, Tree[jnp.ndarray]]:
         loss, output = jnp.zeros(()), {}
@@ -65,7 +60,7 @@ def build_model(parent_dims: Dict[str, int],
         do_parents = parents.copy()
         do_parents[parent_name] = do_parent_one_hot
         do_image = mechanism_apply_fun(params[parent_name]['mechanism'], image, parents, do_parent_one_hot)
-        return do_image, do_parents, {'image': image[order], 'do_image': jnp.clip(do_image[order], 0, 1)}
+        return do_image, do_parents, {'image': image[order], 'do_image': do_image[order]}
 
     def discriminator_step(params: Params,
                            inputs: Tree[jnp.ndarray],
@@ -120,13 +115,15 @@ def build_model(parent_dims: Dict[str, int],
         opt_init, opt_update, get_params = optimizers.momentum(step_size=lambda x: 0.0001, mass=0.9)
 
         @jit
-        def update(i: int, opt_state: OptimizerState, inputs: Tree[np.ndarray]) -> Tuple[OptimizerState, jnp.ndarray, Tree[jnp.ndarray]]:
+        def update(i: int, opt_state: OptimizerState, inputs: Tree[np.ndarray]) \
+                -> Tuple[OptimizerState, jnp.ndarray, Tree[jnp.ndarray]]:
             params = get_params(opt_state)
             (loss, outputs), grads = jax.value_and_grad(apply_fun, has_aux=True)(params, inputs)
             for parent in grads.keys():
                 grads[parent]['mechanism'] = jax.tree_map(lambda x: x * -1, grads[parent]['mechanism'])
-            for parent in grads.keys():
+                #grads[parent]['divergence'] = jax.tree_map(lambda x: jnp.clip(a=x, a_min=-1, a_max=1), grads[parent]['divergence'])
                 grads[parent]['divergence'] = jax.tree_map(lambda x: x * .1, grads[parent]['divergence'])
+
 
             opt_state = opt_update(i, grads, opt_state)
 

@@ -1,99 +1,72 @@
-import functools
-import operator as op
-from typing import List, Tuple, Callable, Any, Dict
+from typing import Dict, List, Tuple
 
+import jax
 import jax.numpy as jnp
-import numpy as np
-from jax import jit, vmap, partial
 from jax.experimental import stax
-from jax.experimental.stax import Dense, Relu, GeneralConv, LeakyRelu, Gelu
-from jax.scipy.ndimage import map_coordinates
+from jax.experimental.stax import Dense, Flatten, Gelu, LogSoftmax, Relu
+from model.linear_attention import linear_attention_layer
+from model.f_divergence import f_divergence
 
 
-def apply_fun_n_times(f: Callable, n: int) -> Any:
-    return lambda x: x if n == 0 else apply_fun_n_times(f, n - 1)(f(x))
+# differentiable rounding operation
+def differentiable_round(x):
+    return x - (jax.lax.stop_gradient(x) - jnp.round(x))
 
 
-def cumprod(array):
-    return functools.reduce(op.mul, array, 1)
+def layer_norm(axes: Tuple[int, ...] = (0, 2, 1)):
+    _init_fun = lambda rng, input_shape: (input_shape, ())
+    _apply_fun = lambda params, x, **kwargs: (x - jnp.mean(x, axis=-1, keepdims=True)) / jnp.sqrt(
+        jnp.var(x, axis=-1, keepdims=True) + 1e-5)
+    return _init_fun, _apply_fun
+
+
+# Classifier
+def classifier(num_classes: int, seq_shape: Tuple[int, int]):
+    seq_len, seq_dim = seq_shape
+    layers = (layer_norm(), linear_attention_layer(seq_dim, seq_len, heads=seq_dim), Gelu,
+              layer_norm(), Dense(seq_dim // 2), Gelu,
+              layer_norm(), Dense(seq_dim // 2), Gelu,
+              Flatten, Dense(num_classes), LogSoftmax)
+    return stax.serial(*layers)
 
 
 # KL estimator
-def kl_estimator(layer_sizes: Tuple[int, ...] = (100, 100)):
-    layers = []
-    for layer_size in layer_sizes:
-        layers.append(Dense(layer_size))
-        layers.append(Relu)
-    layers.append(Dense(1))
-    net_init_fun, net_apply_fun = stax.serial(*layers)
-
-    def init_fun(rng: jnp.ndarray, input_shape: Tuple[int, ...]):
-        return net_init_fun(rng, (input_shape[0], cumprod(input_shape[1:])))
-
-    @jit
-    def apply_fun(params: List[Tuple[jnp.ndarray, ...]], p_sample: jnp.ndarray, q_sample: jnp.ndarray):
-        t_joint = net_apply_fun(params, jnp.reshape(p_sample, (p_sample.shape[0], -1)))
-        t_marginals = net_apply_fun(params, jnp.reshape(q_sample, (q_sample.shape[0], -1)))
-        return jnp.mean(t_joint) - jnp.log(jnp.mean(jnp.exp(t_marginals)))
-
-    return init_fun, apply_fun
-
-
-# Mutual Information estimator -MINE
-def mi_estimator(layer_sizes: Tuple[int, ...] = (100, 100)):
-    kl_init_fun, kl_apply_fun = kl_estimator(layer_sizes)
-
-    def init_fun(rng: jnp.ndarray, input_1_shape: Tuple[int, ...], input_2_shape: Tuple[int, ...]):
-        assert input_1_shape[0] == input_2_shape[0]
-        return kl_init_fun(rng, (input_1_shape[0], cumprod(input_1_shape[1:]) + cumprod(input_2_shape[1:])))
-
-    def input_fun(x1: jnp.ndarray, x2: jnp.ndarray):
-        return jnp.concatenate((jnp.reshape(x1, (x1.shape[0], -1)), jnp.reshape(x2, (x2.shape[0], -1))), axis=-1)
-
-    def apply_fun(params: List[Tuple[jnp.ndarray, ...]],
-                  joint_dist_samples: Tuple[jnp.ndarray, jnp.ndarray],
-                  marginal_dist_samples: Tuple[jnp.ndarray, jnp.ndarray]):
-        return kl_apply_fun(params, input_fun(*joint_dist_samples), input_fun(*marginal_dist_samples))
-
-    return init_fun, apply_fun
-
-
-def warp(x: jnp.ndarray, displacement: jnp.ndarray) -> jnp.ndarray:
-    shape = x.shape[2:]
-    grid = jnp.meshgrid(*[jnp.linspace(0, shape[i] - 1, shape[i]) for i in range(x.ndim - 2)], indexing='ij')
-    warped_grid = jnp.repeat(jnp.expand_dims(jnp.stack(grid) + displacement, axis=1), x.shape[1], axis=1)
-    return vmap(vmap(partial(map_coordinates, order=1), in_axes=0), in_axes=0)(x, warped_grid)
+def f_divergence_estimator(seq_shape: Tuple[int, int]):
+    seq_len, seq_dim = seq_shape
+    layers = (layer_norm(), linear_attention_layer(seq_dim, seq_len, heads=seq_dim), Gelu,
+              layer_norm(), Dense(seq_dim // 2), Gelu,
+              layer_norm(), linear_attention_layer(seq_dim // 2, seq_len, heads=seq_dim // 2), Gelu,
+              layer_norm(), Dense(seq_dim // seq_dim))
+    return f_divergence(mode='kl', layers=layers)
 
 
 # mechanism that acts on image based on categorical parent variable
 def mechanism(parent_name: str,
               parent_dims: Dict[str, int],
-              output_channels: int = 3,
-              num_channels: Tuple[int, ...] = (40, 40, 40)):
-    dim = sum(parent_dims.values()) + parent_dims[parent_name]
-    layers = []
-    for channels in num_channels:
-        layers.append(Conv(channels, filter_shape=(3, 3), padding='SAME'))
-        layers.append(LeakyRelu)
-    layers.append(Conv(output_channels + 2, filter_shape=(3, 3), padding='SAME'))
+              seq_shape: Tuple[int, int]):
+    seq_len, seq_dim = seq_shape
+    input_seq_dim = sum(parent_dims.values()) + parent_dims[parent_name] + seq_dim
+
+    layers = (layer_norm(), Dense(10), Gelu,
+              layer_norm(), linear_attention_layer(10, seq_len, heads=10), Gelu,
+              layer_norm(), Dense(seq_dim), Gelu,
+              layer_norm(), linear_attention_layer(seq_dim, seq_len, heads=seq_dim), Gelu,
+              layer_norm(), Dense(seq_dim), Gelu,
+              layer_norm(), linear_attention_layer(seq_dim, seq_len, heads=seq_dim), Gelu, Dense(seq_dim))
+
     net_init_fun, net_apply_fun = stax.serial(*layers)
 
     def init_fun(rng: jnp.ndarray, input_shape: Tuple[int, ...]):
-        return net_init_fun(rng, (input_shape[0], input_shape[1] + dim, *input_shape[2:]))
+        return net_init_fun(rng, (*input_shape[:2], input_seq_dim))
 
-    @jit
     def apply_fun(params: List[Tuple[jnp.ndarray, ...]],
-                  image: jnp.ndarray,
+                  dense_dct_seq: jnp.ndarray,
                   parents: Dict[str, jnp.ndarray],
                   do_parent: jnp.ndarray):
         def broadcast(parent: jnp.ndarray) -> jnp.ndarray:
-            parent = apply_fun_n_times(lambda x: x[..., np.newaxis], image.ndim - parent.ndim)(parent)
-            return jnp.broadcast_to(parent, (image.shape[0], parent.shape[1], *image.shape[2:]))
+            return jnp.broadcast_to(jnp.expand_dims(parent, axis=1), (*dense_dct_seq.shape[:2], parent.shape[1]))
 
-        net_inputs = jnp.concatenate((image, broadcast(jnp.concatenate([*parents.values(), do_parent], axis=1))),
-                                     axis=1)
-        net_outputs = net_apply_fun(params, net_inputs)
-        output, disp = net_outputs[:, :output_channels], net_outputs[:, output_channels:]
-        return output
+        parents_as_seq = broadcast(jnp.concatenate([*parents.values(), do_parent], axis=-1))
+        return net_apply_fun(params, jnp.concatenate((dense_dct_seq, parents_as_seq), axis=-1))
 
     return init_fun, apply_fun

@@ -70,10 +70,9 @@ def dense_to_seq(dct_img: tf.Tensor) -> tf.Tensor:
 def seq_to_dense(seq: List[tf.Tensor], img_shape: tf.TensorShape) -> tf.Tensor:
     def _seq_to_dense(x: tf.Tensor) -> tf.Tensor:
         indices, values = tf.cast(x[..., :-1], dtype=tf.int64), x[..., -1]
-        _, assignments = tf.raw_ops.UniqueV2(x=indices, axis=(0,))
+        new_indices, assignments = tf.raw_ops.UniqueV2(x=indices, axis=(0,))
         order = tf.argsort(assignments)
-        new_values = tf.math.segment_sum(tf.gather(values, order), tf.gather(assignments, order))
-        new_indices = tf.gather(indices, tf.unique(assignments)[0])
+        new_values = tf.math.segment_mean(tf.gather(values, order), tf.gather(assignments, order))
         return tf.sparse.to_dense(tf.sparse.reorder(
             tf.SparseTensor(dense_shape=img_shape, indices=new_indices, values=new_values)))
 
@@ -129,7 +128,15 @@ def get_jpeg_encode_decode_fns(max_seq_len: int, block_size: Tuple[int, int] = (
 
     def decode_sequence(dense_dct_seq: tf.Tensor, luma_dct_img_shape: tf.TensorShape,
                         chroma_dct_img_shape: tf.TensorShape) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-        dct_seq = tf.RaggedTensor.from_tensor(dense_dct_seq, padding=[-1, -1, -1, -1])
+
+        i1 = tf.round(tf.clip_by_value(dense_dct_seq[..., 0], clip_value_min=-1, clip_value_max=bs * 3 - 1))
+        i2 = tf.round(
+            tf.clip_by_value(dense_dct_seq[..., 1], clip_value_min=-1, clip_value_max=luma_dct_img_shape[1] - 1))
+        i3 = tf.round(
+            tf.clip_by_value(dense_dct_seq[..., 2], clip_value_min=-1, clip_value_max=luma_dct_img_shape[2] - 1))
+        indices = tf.stack((i1, i2, i3), axis=-1)
+        dense_dct_seq = tf.concat((indices, dense_dct_seq[..., -1:]), axis=-1)
+        dct_seq = tf.ragged.boolean_mask(dense_dct_seq, tf.reduce_all(indices >= 0, axis=-1))
         y_dct_seq = tf.ragged.boolean_mask(dct_seq, dct_seq[..., 0] < bs)
         u_dct_seq = tf.ragged.boolean_mask(dct_seq, tf.logical_and(dct_seq[..., 0] >= bs, dct_seq[..., 0] < 2 * bs))
         u_dct_seq = (u_dct_seq - u_offset) / chroma_slope
@@ -153,13 +160,13 @@ def get_jpeg_encode_decode_fns(max_seq_len: int, block_size: Tuple[int, int] = (
         u_dct_img = dct_quantization(u, t_chroma_tf)
         v_dct_img = dct_quantization(v, t_chroma_tf)
 
-        dense_dct_seq = encode_sequence(y_dct_img, u_dct_img, v_dct_img)
-
+        dense_dct_seq = encode_sequence(y_dct_img, u_dct_img, v_dct_img) / [bs*3, *y_dct_img.shape[2:], 255]
         return dense_dct_seq, y.shape[1:], u.shape[1:], y_dct_img.shape[1:], u_dct_img.shape[1:]
 
     def jpeg_decode(dense_dct_seq: tf.Tensor, luma_shape: tf.TensorShape, chroma_shape: tf.TensorShape,
                     luma_dct_shape: tf.TensorShape, chroma_dct_shape: tf.TensorShape) -> tf.Tensor:
         assert dense_dct_seq.shape.is_fully_defined()
+        dense_dct_seq = dense_dct_seq * [bs*3, *luma_dct_shape[1:], 255]
         y_dct_img, u_dct_img, v_dct_img = decode_sequence(dense_dct_seq, luma_dct_shape, chroma_dct_shape)
         y = dct_dequantization(y_dct_img, luma_shape, t_luma_tf)
         u = dct_dequantization(u_dct_img, chroma_shape, t_chroma_tf)
