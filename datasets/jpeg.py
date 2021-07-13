@@ -160,13 +160,12 @@ def get_jpeg_encode_decode_fns(max_seq_len: int, block_size: Tuple[int, int] = (
         u_dct_img = dct_quantization(u, t_chroma_tf)
         v_dct_img = dct_quantization(v, t_chroma_tf)
 
-        dense_dct_seq = encode_sequence(y_dct_img, u_dct_img, v_dct_img) / [bs*3, *y_dct_img.shape[2:], 255]
+        dense_dct_seq = encode_sequence(y_dct_img, u_dct_img, v_dct_img)
         return dense_dct_seq, y.shape[1:], u.shape[1:], y_dct_img.shape[1:], u_dct_img.shape[1:]
 
     def jpeg_decode(dense_dct_seq: tf.Tensor, luma_shape: tf.TensorShape, chroma_shape: tf.TensorShape,
                     luma_dct_shape: tf.TensorShape, chroma_dct_shape: tf.TensorShape) -> tf.Tensor:
         assert dense_dct_seq.shape.is_fully_defined()
-        dense_dct_seq = dense_dct_seq * [bs*3, *luma_dct_shape[1:], 255]
         y_dct_img, u_dct_img, v_dct_img = decode_sequence(dense_dct_seq, luma_dct_shape, chroma_dct_shape)
         y = dct_dequantization(y_dct_img, luma_shape, t_luma_tf)
         u = dct_dequantization(u_dct_img, chroma_shape, t_chroma_tf)

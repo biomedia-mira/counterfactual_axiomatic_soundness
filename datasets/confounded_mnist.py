@@ -7,7 +7,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 from datasets.jpeg import get_jpeg_encode_decode_fns
-from trainer.utils import image_gallery
+from model.evaluation import image_gallery
 
 MechanismFn = Callable[[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]], Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]]
 
@@ -78,43 +78,65 @@ def create_unconfounded_datasets(dataset: tf.data.Dataset, parent_dims: Dict[str
     return datasets, marginals
 
 
-def prepare_dataset(dataset: tf.data.Dataset,
-                    batch_size: int,
-                    max_seq_len: int,
-                    image_shape: Tuple[int, int, int],
-                    parent_dims: Dict[str, int]
-                    ) -> Tuple[tf.data.Dataset, Callable[[np.array], np.array]]:
-    encode_fn, _decode_fn = get_jpeg_encode_decode_fns(max_seq_len=max_seq_len, block_size=(8, 8), quality=50,
-                                                       chroma_subsample=False)
+###
+def get_jpeg_encoding_decoding_fns(max_seq_len: int, image_shape: Tuple[int, int, int]):
+    encode_fn, decode_fn = get_jpeg_encode_decode_fns(max_seq_len=max_seq_len, block_size=(8, 8), quality=50,
+                                                      chroma_subsample=False)
     dummy = tf.convert_to_tensor(np.expand_dims(np.zeros(image_shape, dtype=np.float32), axis=0))
     _, luma_shape, chroma_shape, luma_dct_shape, chroma_dct_shape = encode_fn(dummy)
 
-    def decode_fn(dense_dct_seq: np.ndarray) -> np.ndarray:
-        return _decode_fn(tf.convert_to_tensor(dense_dct_seq), luma_shape, chroma_shape,
-                          luma_dct_shape, chroma_dct_shape).numpy()
+    def jpeg_decode_fn(dense_dct_seq: np.ndarray) -> np.ndarray:
+        return decode_fn(tf.convert_to_tensor(dense_dct_seq), luma_shape, chroma_shape,
+                         luma_dct_shape, chroma_dct_shape).numpy() # * luma_dct_shape
 
-    def encode_image_and_parents(image: tf.Tensor, parents: Dict[str, tf.Tensor]) \
-            -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
-        sequence = encode_fn(image)[0]
-        parents = {parent: tf.one_hot(value, parent_dims[parent]) for parent, value in parents.items()}
-        return sequence, parents
+    def jpeg_encode_fn(image: tf.Tensor) -> tf.Tensor:
+        return encode_fn(image)[0] # / luma_dct_shape
 
+    return jpeg_encode_fn, jpeg_decode_fn
+
+
+def rgb_decode_fn(image: np.ndarray) -> np.ndarray:
+    return np.clip(image * 255., a_min=0, a_max=255).astype(dtype=np.int32)
+
+
+def rgb_encode_fn(image: tf.Tensor) -> tf.Tensor:
+    return image / tf.convert_to_tensor(255.)
+
+
+##
+
+def prepare_dataset(dataset: tf.data.Dataset, batch_size: int, parent_dims, img_encode_fn) -> Tuple[
+    tf.data.Dataset, Callable[[np.array], np.array]]:
     dataset = dataset.cache()
     dataset = dataset.shuffle(buffer_size=60000, reshuffle_each_iteration=True)
     dataset = dataset.batch(batch_size, drop_remainder=True)
-    dataset = dataset.map(lambda d: {key: encode_image_and_parents(value[1], value[2]) for key, value in d.items()})
+
+    def encode(*args):
+        _, image, parents = args
+        parents = {parent: tf.one_hot(value, parent_dims[parent]) for parent, value in parents.items()}
+        return img_encode_fn(image), parents
+
+    dataset = dataset.map(lambda d: {key: encode(*value) for key, value in d.items()})
     dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
     dataset = tfds.as_numpy(dataset)
-    return dataset, decode_fn
+    return dataset
 
 
-def create_confounded_mnist_dataset(batch_size: int, debug: bool = True):
+def create_confounded_mnist_dataset(batch_size: int, debug: bool = True, jpeg_encode: bool = True):
     ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=True, as_supervised=True)
     parent_dims = {'digit': 10, 'color': 10}
+    image_shape = (28, 28, 3)
     seq_len = 500
     seq_shape = (seq_len, 4)
     train_targets = np.array([y for x, y in ds_train.as_numpy_iterator()])
     test_targets = np.array([y for x, y in ds_train.as_numpy_iterator()])
+
+    if jpeg_encode:
+        img_encode_fn, img_decode_fn = get_jpeg_encoding_decoding_fns(seq_len, image_shape)
+        input_shape = (-1, *seq_shape)
+    else:
+        img_encode_fn, img_decode_fn = rgb_encode_fn, rgb_decode_fn
+        input_shape = (-1, *image_shape)
 
     colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1)
     colorize_fun = get_colorize_fn(colorize_cm, train_targets)
@@ -123,11 +145,11 @@ def create_confounded_mnist_dataset(batch_size: int, debug: bool = True):
     unconfounded_datasets, marginals = create_unconfounded_datasets(ds_train, parent_dims)
 
     dataset = tf.data.Dataset.zip({'joint': ds_train, **unconfounded_datasets})
-    dataset, decode_fn = prepare_dataset(dataset, batch_size, seq_len, (28, 28, 3), parent_dims)
+    dataset = prepare_dataset(dataset, batch_size, parent_dims, img_encode_fn)
     if debug:
         for key, data in iter(dataset).__next__().items():
-            image = decode_fn(data[0])
-            plt.imshow(image_gallery(image))
+            order = np.argsort(np.argmax(data[1]['digit'], axis=1))
+            plt.imshow(image_gallery(img_decode_fn(data[0])[order]))
             plt.show()
 
-    return dataset, parent_dims, marginals, decode_fn, seq_shape
+    return dataset, parent_dims, marginals, img_decode_fn, input_shape

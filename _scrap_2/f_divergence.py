@@ -3,6 +3,7 @@ from typing import List, Tuple
 import jax.numpy as jnp
 from jax.experimental import stax
 from jax.experimental.stax import Dense, Flatten
+from jax import grad
 
 
 # https://arxiv.org/abs/1606.00709
@@ -85,8 +86,30 @@ def get_activation_and_f_conj(mode: str):
         raise ValueError(f'Unsupported divergence: {mode}.')
 
 
+from jax import vmap, grad
+from jax.tree_util import tree_reduce, tree_map
+
+
+# def f_divergence(mode: str, layers, gradient_penalty: bool = True):
+#     activation, f_conj = get_activation_and_f_conj(mode)
+#     init_fun, net_apply_fun = stax.serial(*layers, Flatten, Dense(1))
+#
+#     def apply_fun(params: List[Tuple[jnp.ndarray, ...]], p_sample: jnp.ndarray, q_sample: jnp.ndarray):
+#         t_p_dist = net_apply_fun(params, p_sample)
+#         t_q_dist = net_apply_fun(params, q_sample)
+#         #penalty_ = vmap(lambda y: grad(lambda p, x: activation(net_apply_fun(params, x)[0,0]))(params, y[jnp.newaxis]))(p_sample)
+#         # penalty = tree_reduce(lambda x, y: x + y, tree_map(lambda x: jnp.sum(x ** 2.), penalty_)) / len(p_sample)
+#         return jnp.mean(activation(t_p_dist)) - jnp.mean(f_conj(activation(t_q_dist)))# - penalty
+#
+#     return init_fun, apply_fun
+
+
 def f_divergence(mode: str, layers):
-    activation, f_conj = get_activation_and_f_conj(mode)
+    def activation(v):
+        return -jnp.log(1 + jnp.exp(-v))
+
+    def f_conj(t):
+        return -jnp.log(1 - jnp.exp(t))
     init_fun, net_apply_fun = stax.serial(*layers, Flatten, Dense(1))
 
     def apply_fun(params: List[Tuple[jnp.ndarray, ...]], p_sample: jnp.ndarray, q_sample: jnp.ndarray):

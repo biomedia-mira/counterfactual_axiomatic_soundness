@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import jit, vmap, partial
 from jax.experimental import stax
-from jax.experimental.stax import Dense, Relu, GeneralConv, LeakyRelu, Gelu
+from jax.experimental.stax import Dense, Relu, GeneralConv, LeakyRelu, Gelu, Conv
 from jax.scipy.ndimage import map_coordinates
 
 
