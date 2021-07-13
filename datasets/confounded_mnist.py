@@ -7,9 +7,21 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 from datasets.jpeg import get_jpeg_encode_decode_fns
-from model.evaluation import image_gallery
 
 MechanismFn = Callable[[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]], Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]]
+
+
+def image_gallery(array: np.ndarray, ncols: int = 8):
+    array = np.clip(array, a_min=0, a_max=255) / 255.
+    array = array[:128]
+    nindex, height, width, intensity = array.shape
+    nrows = nindex // ncols + int(bool(nindex % ncols))
+    pad = np.zeros(shape=(nrows * ncols - nindex, height, width, intensity))
+    array = np.concatenate((array, pad), axis=0)
+    result = (array.reshape((nrows, ncols, height, width, intensity))
+              .swapaxes(1, 2)
+              .reshape(height * nrows, width * ncols, intensity))
+    return result
 
 
 def get_uniform_confusion_matrix(num_rows: int, num_columns: int) -> np.ndarray:
@@ -85,12 +97,12 @@ def get_jpeg_encoding_decoding_fns(max_seq_len: int, image_shape: Tuple[int, int
     dummy = tf.convert_to_tensor(np.expand_dims(np.zeros(image_shape, dtype=np.float32), axis=0))
     _, luma_shape, chroma_shape, luma_dct_shape, chroma_dct_shape = encode_fn(dummy)
 
-    def jpeg_decode_fn(dense_dct_seq: np.ndarray) -> np.ndarray:
-        return decode_fn(tf.convert_to_tensor(dense_dct_seq), luma_shape, chroma_shape,
-                         luma_dct_shape, chroma_dct_shape).numpy() # * luma_dct_shape
-
-    def jpeg_encode_fn(image: tf.Tensor) -> tf.Tensor:
-        return encode_fn(image)[0] # / luma_dct_shape
+    # def jpeg_decode_fn(dense_dct_seq: np.ndarray) -> np.ndarray:
+    #     return decode_fn(tf.convert_to_tensor(dense_dct_seq), luma_shape, chroma_shape,
+    #                      luma_dct_shape, chroma_dct_shape).numpy() # * luma_dct_shape
+    #
+    # def jpeg_encode_fn(image: tf.Tensor) -> tf.Tensor:
+    #     return encode_fn(image)[0] # / luma_dct_shape
 
     return jpeg_encode_fn, jpeg_decode_fn
 

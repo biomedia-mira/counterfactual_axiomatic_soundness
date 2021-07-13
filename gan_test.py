@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-from model.evaluation import get_evaluation_update_and_log_fns
+from trainer.evaluation import get_evaluation_update_and_log_fns
 from model.gan import gan_model
 from trainer.training import train
 

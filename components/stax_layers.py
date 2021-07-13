@@ -1,11 +1,18 @@
-from typing import Tuple, Union
+from typing import Callable, Tuple
+from typing import Union
 
 import jax
 import jax.experimental.stax as stax
+import jax.numpy as jnp
+from jax.experimental.optimizers import Params
 from jax.experimental.stax import Conv, Relu
 from jax.nn import normalize
-import jax.numpy as jnp
-import jax.random as random
+
+Array = jnp.ndarray
+Shape = Tuple[int, ...]
+InitFn = Callable[[Array, Shape], Tuple[Shape, Params]]
+ApplyFn = Callable
+StaxLayer = Callable[..., Tuple[InitFn, ApplyFn]]
 
 
 # differentiable rounding operation

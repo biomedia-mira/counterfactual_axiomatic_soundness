@@ -2,7 +2,7 @@ import shutil
 from pathlib import Path
 
 from datasets.confounded_mnist import create_confounded_mnist_dataset
-from model.evaluation import get_evaluation_update_and_log_fns
+from trainer.evaluation import get_evaluation_update_and_log_fns
 from model.model import build_model
 from trainer.training import train
 

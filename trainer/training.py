@@ -1,19 +1,39 @@
 import itertools
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Optional, Tuple, TypeVar, Union
+from typing import Callable, Iterable, Tuple, TypeVar, Any
 
 import jax
 import jax.numpy as jnp
-import tensorflow as tf
 from jax.experimental.optimizers import OptimizerState, Params
 
 T = TypeVar('T')
-Tree = Union[Dict[str, T], Dict[str, 'Tree']]
-Shape = Tuple[int, ...]
-InitFn = Callable[[jnp.ndarray, Shape], Tuple[Shape, Params]]
-ApplyFn = Callable[[Params, Tree[jnp.ndarray]], Tuple[jnp.ndarray, Tree[jnp.ndarray]]]
-UpdateFn = Callable[[int, OptimizerState, Tree[jnp.ndarray]], Tuple[OptimizerState, jnp.ndarray, Tree[jnp.ndarray]]]
+UpdateFn = Callable[[int, OptimizerState, Any, jnp.ndarray], Tuple[OptimizerState, jnp.ndarray, Any]]
 InitOptimizerFn = Callable[[Params], Tuple[OptimizerState, UpdateFn]]
+
+from typing import Any, Callable, Dict, Optional
+
+import numpy as np
+import tensorflow as tf
+
+
+
+def log_eval(evaluation: Optional[Dict], epoch: int, writer: tf.summary.SummaryWriter, tag=None) -> None:
+    for new_tag, value in evaluation.items():
+        new_tag = tag + '/' + new_tag if tag else new_tag
+        log_eval(value, epoch, writer, new_tag) if isinstance(value, Dict) else  log_value(value, tag, epoch, writer)
+
+
+
+def log_value(value: Any, tag: str, step: int, writer: tf.summary.SummaryWriter,
+              logging_fn: Callable[[str], None] = print) -> None:
+    message = f'epoch: {step:d}:'
+    with writer.as_default():
+        if value.ndim == 1:
+            tf.summary.scalar(tag, np.mean(value), step)
+            message += f'\t{tag}: {np.mean(value):.2f}'
+        else:
+            tf.summary.image(tag, np.expand_dims(value, axis=0)), step)
+        logging_fn(message)
 
 
 def get_summary_writer(job_dir: Path, name: str) -> tf.summary.SummaryWriter:
@@ -26,7 +46,6 @@ def train(init_fun: InitFn,
           apply_fun: ApplyFn,
           init_optimizer_fun: InitOptimizerFn,
           update_eval,
-          log_eval,
           input_shape: Tuple[int, ...],
           job_dir: Path,
           num_epochs: int,
