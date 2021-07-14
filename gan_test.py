@@ -7,7 +7,7 @@ import tensorflow_datasets as tfds
 
 from trainer.evaluation import get_evaluation_update_and_log_fns
 from model.gan import gan_model
-from trainer.training import train
+from model.train import train
 
 
 def rgb_decode_fn(image: np.ndarray) -> np.ndarray:

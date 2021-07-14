@@ -8,12 +8,10 @@ import numpy as np
 from jax import jit
 from jax.experimental import optimizers, stax
 from jax.experimental.optimizers import OptimizerState
-from jax.experimental.stax import Dense, Flatten, Relu, BatchNorm, Sigmoid, Conv, Tanh, Gelu, LeakyRelu, Conv, \
-    ConvTranspose
+from jax.experimental.stax import Dense, Flatten, Relu, BatchNorm, Sigmoid, LeakyRelu, ConvTranspose
 
 from components.f_divergence import f_divergence
-from components.stax_layers import layer_norm, reshape
-from trainer.training import ApplyFn, InitFn, InitOptimizerFn, Params, Tree, UpdateFn
+from model.train import ApplyFn, InitFn, InitOptimizerFn, Params, Tree, UpdateFn
 from jax.lax import stop_gradient
 
 # discriminative = (Flatten, Dense(1024), BatchNorm(0), Gelu, Dense(512), BatchNorm(0), Gelu)
