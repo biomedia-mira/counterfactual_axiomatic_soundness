@@ -1,9 +1,16 @@
 from typing import Tuple
 
-from jax.experimental.stax import Conv, Dense, Relu, Sigmoid, BatchNorm
+import jax.nn
+import jax.numpy as jnp
+from jax.experimental.stax import Conv, Dense, Relu, Sigmoid, BatchNorm, elementwise, ConvTranspose
 
 from components.stax_layers import layer_norm, conv_residual_block, unet
 from components.linear_attention import linear_attention_layer
+from components.mlp_mixer import mixer_layer
+
+
+def jpeg_sigmoid(x):
+    return jnp.concatenate((jax.nn.tanh(x[..., :3]), x[..., 3:]), axis=-1)
 
 
 def get_layers_rgb_mode(input_shape: Tuple[int, ...]):
@@ -14,15 +21,20 @@ def get_layers_rgb_mode(input_shape: Tuple[int, ...]):
                       Conv(16, filter_shape=(3, 3), padding='VALID'), Relu,
                       Conv(8, filter_shape=(3, 3), padding='VALID'), Relu)
 
-    # generative = (Conv(32, filter_shape=(3, 3), padding='SAME'), Relu, BatchNorm(),
-    #               Conv(64, filter_shape=(3, 3), padding='SAME'), Relu, BatchNorm(),
-    #               Conv(128, filter_shape=(3, 3), padding='SAME'), Relu, BatchNorm(),
-    #               Conv(input_dim, filter_shape=(3, 3), padding='SAME'), Sigmoid)
+    generative = (Conv(16, filter_shape=(3, 3), padding='VALID'), Relu,
+                  Conv(32, filter_shape=(3, 3), padding='VALID'), Relu,
+                  Conv(64, filter_shape=(3, 3), padding='VALID'), Relu,
+                  Conv(128, filter_shape=(3, 3), padding='VALID'), Relu,
+                  ConvTranspose(64, filter_shape=(3, 3)), Relu,
+                  ConvTranspose(32, filter_shape=(3, 3)), Relu,
+                  ConvTranspose(16, filter_shape=(3, 3)), Relu,
+                  ConvTranspose(input_dim, filter_shape=(3, 3)), Sigmoid)
 
-    generative = (Conv(32, filter_shape=(3, 3), padding='SAME'), Relu,
-                  Conv(64, filter_shape=(3, 3), padding='SAME'), Relu,
-                  Conv(128, filter_shape=(3, 3), padding='SAME'), Relu,
-                  Conv(input_dim, filter_shape=(3, 3), padding='SAME'), Sigmoid)
+    # This one works for color at least
+    # generative = (Conv(32, filter_shape=(3, 3), padding='SAME'), Relu,
+    #               Conv(64, filter_shape=(3, 3), padding='SAME'), Relu,
+    #               Conv(128, filter_shape=(3, 3), padding='SAME'), Relu,
+    #               Conv(input_dim, filter_shape=(3, 3), padding='SAME'), Sigmoid)
 
     return discriminative, discriminative, generative
 
@@ -30,16 +42,16 @@ def get_layers_rgb_mode(input_shape: Tuple[int, ...]):
 def get_layers_jpeg_mode(input_shape: Tuple[int, ...]):
     assert len(input_shape) == 3
     _, seq_len, seq_dim = input_shape
-    discriminative = (layer_norm(-1), linear_attention_layer(seq_dim, seq_len, heads=seq_dim), Relu,
-                      layer_norm(-1), Dense(seq_dim // 2), Relu,
-                      layer_norm(-1), Dense(seq_dim // 2), Relu)
+    discriminative = (mixer_layer(seq_len, 32), Relu,
+                      mixer_layer(seq_len, 32), Relu)
 
-    generative = (layer_norm(-1), Dense(10), Relu,
-                  layer_norm(-1), linear_attention_layer(10, seq_len, heads=10), Relu,
-                  layer_norm(-1), Dense(seq_dim), Relu,
-                  layer_norm(-1), linear_attention_layer(seq_dim, seq_len, heads=seq_dim), Relu,
-                  layer_norm(-1), Dense(seq_dim), Relu,
-                  layer_norm(-1), linear_attention_layer(seq_dim, seq_len, heads=seq_dim), Relu, Dense(seq_dim))
+    generative = (mixer_layer(seq_len, 32), Relu,
+                  mixer_layer(seq_len, 64), Relu,
+                  mixer_layer(seq_len, 64), Relu,
+                  mixer_layer(seq_len, 32), Relu,
+                  mixer_layer(seq_len, seq_dim), Relu,
+                  elementwise(jpeg_sigmoid))
+
     return discriminative, discriminative, generative
 
 

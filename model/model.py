@@ -1,3 +1,4 @@
+import random
 from typing import Any, Dict, Tuple, Iterable, Callable, Optional
 
 import jax
@@ -44,6 +45,8 @@ def build_model(parent_dims: Dict[str, int],
     mechanisms = {p_name: mechanism(p_name, parent_dims, layers=mechanism_layers) for p_name in parent_dims.keys()}
     # this can be updated in the future for sequence of interventions
     interventions = tuple((parent_name,) for parent_name in parent_names)
+    interventions = tuple((parent_name,) for parent_name in ['digit'])
+
 
     def init_fun(rng: Array, input_shape: Shape) -> Params:
         classifier_params = {p_name: _init_fun(rng, input_shape)[1] for p_name, (_init_fun, _) in classifiers.items()}
@@ -99,7 +102,7 @@ def build_model(parent_dims: Dict[str, int],
             loss = loss + cross_entropy
 
         # Transform the confounded data into to the target (unconfounded) distributions
-        image, parents = inputs['color']
+        image, parents = inputs['joint']
         for intervention in interventions:
             do_image, do_parents = image, parents
             for i, do_parent_name in enumerate(intervention):
@@ -115,10 +118,12 @@ def build_model(parent_dims: Dict[str, int],
         #opt_init, opt_update, get_params = optimizers.momentum(step_size=lambda x: 0.0001, mass=0.5)
         opt_init, opt_update, get_params = optimizers.adam(step_size=lambda x: 0.0002, b1=0.5)
 
-        #@jax.jit
+        @jax.jit
         def update(i: int, opt_state: OptimizerState, inputs: Any, rng: Array) -> Tuple[OptimizerState, Array, Any]:
             (loss, outputs), grads = jax.value_and_grad(apply_fun, has_aux=True)(get_params(opt_state), inputs, rng)
+            # grads = (grads[0], jax.tree_map(lambda x: x * .1, grads[1]), grads[2])
             opt_state = opt_update(i, grads, opt_state)
+
             return opt_state, loss, outputs
 
         opt_state = opt_init(params)

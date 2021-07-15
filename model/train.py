@@ -57,22 +57,33 @@ def train(model: Model,
     opt_state, update = init_optimizer_fun(params)
 
     itercount = itertools.count()
+    # for epoch in range(num_epochs):
+    #     cum_output = None
+    #     for i, inputs in enumerate(train_data):
+    #         opt_state, loss, output = update(next(itercount), opt_state, inputs, rng)
+    #         rng, _ = jax.random.split(rng)
+    #         cum_output = accumulate_output(output, cum_output)
+    #         if jnp.isnan(loss):
+    #             raise ValueError('NaN loss')
+    #     log_eval(log_output(cum_output), epoch, train_writer)
+    #
+    #     if epoch % eval_every == 0 and test_data is not None:
+    #         cum_output = None
+    #         for inputs in test_data:
+    #             _, output = jax.jit(apply_fun)(params, inputs)
+    #             cum_output = accumulate_output(output, cum_output)
+    #         log_eval(log_output(cum_output), epoch, test_writer)
+    #
+    #     if epoch % save_every == 0:
+    #         jnp.save(str(job_dir / 'model.np'), params)
+
     for epoch in range(num_epochs):
-        cum_output = None
         for i, inputs in enumerate(train_data):
-            opt_state, loss, output = update(next(itercount), opt_state, inputs, rng)
+            j=next(itercount)
+            opt_state, loss, output = update(j, opt_state, inputs, rng)
             rng, _ = jax.random.split(rng)
-            cum_output = accumulate_output(output, cum_output)
+            log_eval(log_output(output), j, train_writer)
             if jnp.isnan(loss):
                 raise ValueError('NaN loss')
-        log_eval(log_output(cum_output), epoch, train_writer)
 
-        if epoch % eval_every == 0 and test_data is not None:
-            cum_output = None
-            for inputs in test_data:
-                _, output = jax.jit(apply_fun)(params, inputs)
-                cum_output = accumulate_output(output, cum_output)
-            log_eval(log_output(cum_output), epoch, test_writer)
 
-        if epoch % save_every == 0:
-            jnp.save(str(job_dir / 'model.np'), params)

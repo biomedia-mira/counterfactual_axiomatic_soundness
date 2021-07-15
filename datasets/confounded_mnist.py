@@ -90,19 +90,19 @@ def create_unconfounded_datasets(dataset: tf.data.Dataset, parent_dims: Dict[str
     return datasets, marginals
 
 
-###
 def get_jpeg_encoding_decoding_fns(max_seq_len: int, image_shape: Tuple[int, int, int]):
     encode_fn, decode_fn = get_jpeg_encode_decode_fns(max_seq_len=max_seq_len, block_size=(8, 8), quality=50,
                                                       chroma_subsample=False)
     dummy = tf.convert_to_tensor(np.expand_dims(np.zeros(image_shape, dtype=np.float32), axis=0))
-    _, luma_shape, chroma_shape, luma_dct_shape, chroma_dct_shape = encode_fn(dummy)
+    seq, luma_shape, chroma_shape, luma_dct_shape, chroma_dct_shape = encode_fn(dummy)
+    norm_factor = tf.broadcast_to(tf.convert_to_tensor((*luma_dct_shape, 255), dtype=tf.float32), seq.shape)
 
-    # def jpeg_decode_fn(dense_dct_seq: np.ndarray) -> np.ndarray:
-    #     return decode_fn(tf.convert_to_tensor(dense_dct_seq), luma_shape, chroma_shape,
-    #                      luma_dct_shape, chroma_dct_shape).numpy() # * luma_dct_shape
-    #
-    # def jpeg_encode_fn(image: tf.Tensor) -> tf.Tensor:
-    #     return encode_fn(image)[0] # / luma_dct_shape
+    def jpeg_decode_fn(dense_dct_seq: np.ndarray) -> np.ndarray:
+        return decode_fn(tf.convert_to_tensor(dense_dct_seq * norm_factor), luma_shape, chroma_shape, luma_dct_shape,
+                         chroma_dct_shape).numpy()
+
+    def jpeg_encode_fn(image: tf.Tensor) -> tf.Tensor:
+        return encode_fn(image)[0] / norm_factor
 
     return jpeg_encode_fn, jpeg_decode_fn
 
@@ -114,8 +114,6 @@ def rgb_decode_fn(image: np.ndarray) -> np.ndarray:
 def rgb_encode_fn(image: tf.Tensor) -> tf.Tensor:
     return image / tf.convert_to_tensor(255.)
 
-
-##
 
 def prepare_dataset(dataset: tf.data.Dataset, batch_size: int, parent_dims, img_encode_fn) -> Tuple[
     tf.data.Dataset, Callable[[np.array], np.array]]:
@@ -138,7 +136,7 @@ def create_confounded_mnist_dataset(batch_size: int, debug: bool = True, jpeg_en
     ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=True, as_supervised=True)
     parent_dims = {'digit': 10, 'color': 10}
     image_shape = (28, 28, 3)
-    seq_len = 500
+    seq_len = 350
     seq_shape = (seq_len, 4)
     train_targets = np.array([y for x, y in ds_train.as_numpy_iterator()])
     test_targets = np.array([y for x, y in ds_train.as_numpy_iterator()])

@@ -128,14 +128,7 @@ def get_jpeg_encode_decode_fns(max_seq_len: int, block_size: Tuple[int, int] = (
 
     def decode_sequence(dense_dct_seq: tf.Tensor, luma_dct_img_shape: tf.TensorShape,
                         chroma_dct_img_shape: tf.TensorShape) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-
-        i1 = tf.round(tf.clip_by_value(dense_dct_seq[..., 0], clip_value_min=-1, clip_value_max=bs * 3 - 1))
-        i2 = tf.round(
-            tf.clip_by_value(dense_dct_seq[..., 1], clip_value_min=-1, clip_value_max=luma_dct_img_shape[1] - 1))
-        i3 = tf.round(
-            tf.clip_by_value(dense_dct_seq[..., 2], clip_value_min=-1, clip_value_max=luma_dct_img_shape[2] - 1))
-        indices = tf.stack((i1, i2, i3), axis=-1)
-        dense_dct_seq = tf.concat((indices, dense_dct_seq[..., -1:]), axis=-1)
+        indices = dense_dct_seq[..., :-1]
         dct_seq = tf.ragged.boolean_mask(dense_dct_seq, tf.reduce_all(indices >= 0, axis=-1))
         y_dct_seq = tf.ragged.boolean_mask(dct_seq, dct_seq[..., 0] < bs)
         u_dct_seq = tf.ragged.boolean_mask(dct_seq, tf.logical_and(dct_seq[..., 0] >= bs, dct_seq[..., 0] < 2 * bs))
