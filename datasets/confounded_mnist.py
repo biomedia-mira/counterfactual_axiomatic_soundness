@@ -95,14 +95,16 @@ def get_jpeg_encoding_decoding_fns(max_seq_len: int, image_shape: Tuple[int, int
                                                       chroma_subsample=False)
     dummy = tf.convert_to_tensor(np.expand_dims(np.zeros(image_shape, dtype=np.float32), axis=0))
     seq, luma_shape, chroma_shape, luma_dct_shape, chroma_dct_shape = encode_fn(dummy)
-    norm_factor = tf.broadcast_to(tf.convert_to_tensor((*luma_dct_shape, 255), dtype=tf.float32), seq.shape)
+
+    norm_factor = (luma_dct_shape[0] * 3 - 1, luma_dct_shape[1], luma_dct_shape[2], 255)
+    tf_norm_factor = tf.broadcast_to(tf.convert_to_tensor(norm_factor, dtype=tf.float32) - 1., seq.shape)
 
     def jpeg_decode_fn(dense_dct_seq: np.ndarray) -> np.ndarray:
-        return decode_fn(tf.convert_to_tensor(dense_dct_seq * norm_factor), luma_shape, chroma_shape, luma_dct_shape,
+        return decode_fn(tf.convert_to_tensor(dense_dct_seq * tf_norm_factor), luma_shape, chroma_shape, luma_dct_shape,
                          chroma_dct_shape).numpy()
 
     def jpeg_encode_fn(image: tf.Tensor) -> tf.Tensor:
-        return encode_fn(image)[0] / norm_factor
+        return encode_fn(image)[0] / tf_norm_factor
 
     return jpeg_encode_fn, jpeg_decode_fn
 

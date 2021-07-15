@@ -4,6 +4,9 @@ from typing import List, Tuple
 import jax.numpy as jnp
 from jax.experimental import stax
 from jax.experimental.stax import Dense, Flatten
+from jax.lax import stop_gradient
+from jax import vmap, grad
+from jax.tree_util import tree_map, tree_reduce
 
 
 def gan():
@@ -83,13 +86,27 @@ def get_activation_and_f_conj(mode: str):
         raise ValueError(f'Unsupported divergence: {mode}.')
 
 
-def f_divergence(mode: str, layers):
+def f_gan(mode: str, layers, trick_g: bool = False, gradient_penalty: bool = False):
     activation, f_conj = get_activation_and_f_conj(mode)
     init_fun, net_apply_fun = stax.serial(*layers, Flatten, Dense(1))
 
-    def apply_fun(params: List[Tuple[jnp.ndarray, ...]], p_sample: jnp.ndarray, q_sample: jnp.ndarray):
+    def calc_gradient_penalty(params, p_sample):
+        _p = vmap(lambda y: grad(lambda p, x: activation(net_apply_fun(params, x)[0, 0]))(params, y[jnp.newaxis]))(
+            p_sample)
+        return tree_reduce(lambda x, y: x + y, tree_map(lambda x: jnp.sum(x ** 2.), _p)) / len(p_sample)
+
+    def calc_divergence(params: List[Tuple[jnp.ndarray, ...]], p_sample: jnp.ndarray, q_sample: jnp.ndarray):
         t_p_dist = net_apply_fun(params, p_sample)
         t_q_dist = net_apply_fun(params, q_sample)
         return jnp.mean(activation(t_p_dist)) - jnp.mean(f_conj(activation(t_q_dist)))
+
+    def apply_fun(params: List[Tuple[jnp.ndarray, ...]], p_sample: jnp.ndarray, q_sample: jnp.ndarray):
+        divergence = calc_divergence(params, p_sample, stop_gradient(q_sample))
+        disc_loss = divergence + (calc_gradient_penalty(params, p_sample) if gradient_penalty else 0.)
+        if not trick_g:
+            gen_loss = calc_divergence(stop_gradient(params), p_sample, q_sample)
+        else:
+            gen_loss = -jnp.mean(activation(net_apply_fun(stop_gradient(params), q_sample)))
+        return divergence, disc_loss, gen_loss
 
     return init_fun, apply_fun

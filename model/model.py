@@ -9,7 +9,7 @@ from jax.experimental.optimizers import OptimizerState
 from jax.lax import stop_gradient
 
 from components.classifier import classifier, calc_accuracy, calc_cross_entropy
-from components.f_divergence import f_divergence
+from components.f_gan import f_gan
 from components.stax_layers import InitFn, ApplyFn, Shape, Array, StaxLayer
 from model.modes import get_layers
 from model.train import Params, UpdateFn, Model
@@ -41,12 +41,10 @@ def build_model(parent_dims: Dict[str, int],
     classifier_layers, f_divergence_layers, mechanism_layers = get_layers(mode, input_shape)
     parent_names = list(parent_dims.keys())
     classifiers = {p_name: classifier(dim, layers=classifier_layers) for p_name, dim in parent_dims.items()}
-    divergences = {p_name: f_divergence(mode='gan', layers=f_divergence_layers) for p_name in parent_dims.keys()}
+    divergences = {p_name: f_gan(mode='gan', layers=f_divergence_layers, trick_g=True) for p_name in parent_dims.keys()}
     mechanisms = {p_name: mechanism(p_name, parent_dims, layers=mechanism_layers) for p_name in parent_dims.keys()}
     # this can be updated in the future for sequence of interventions
     interventions = tuple((parent_name,) for parent_name in parent_names)
-    interventions = tuple((parent_name,) for parent_name in ['digit'])
-
 
     def init_fun(rng: Array, input_shape: Shape) -> Params:
         classifier_params = {p_name: _init_fun(rng, input_shape)[1] for p_name, (_init_fun, _) in classifiers.items()}
@@ -72,23 +70,24 @@ def build_model(parent_dims: Dict[str, int],
         return do_image, {**parents, parent_name: do_parent}, {'image': image[order], 'do_image': do_image[order]}
 
     def assert_dist(params: Params, do_image: Array, do_parents: Dict[str, Array], inputs: Any, target_dist: str) -> \
-    Tuple[Array, Any]:
+            Tuple[Array, Any]:
         classifier_params, divergence_params, mechanism_params = params
         loss, output = jnp.zeros(()), {}
         # Ensure image has the correct parents
         for parent_name in parent_names:
             (_, _apply_fun), _params = classifiers[parent_name], classifier_params[parent_name]
-            cross_entropy, output[parent_name] = classify(_apply_fun, do_parents[parent_name])(stop_gradient(_params), do_image)
+            cross_entropy, output[parent_name] = classify(_apply_fun, do_parents[parent_name])(stop_gradient(_params),
+                                                                                               do_image)
             loss = loss + cross_entropy
 
         # Ensure image comes from correct distribution
         image_target_dist, _ = inputs[target_dist]
         (_, _apply_fun), _params = divergences[target_dist], divergence_params[target_dist]
-        divergence_gen = _apply_fun(stop_gradient(_params), image_target_dist, do_image)
-        divergence_disc = _apply_fun(_params, image_target_dist, stop_gradient(do_image))
+        divergence, disc_loss, gen_loss = _apply_fun(_params, image_target_dist, do_image)
+
         # Mechanism minimises cross-entropy and divergence, discriminator maximises divergence
-        loss = loss + divergence_gen - divergence_disc
-        return loss, {**output, 'divergence': divergence_gen}
+        loss = loss + gen_loss - disc_loss
+        return loss, {**output, 'divergence': divergence}
 
     def apply_fun(params: Params, inputs: Any, rng: Array) -> Tuple[Array, Any]:
         loss, output = jnp.zeros(()), {}
@@ -115,7 +114,7 @@ def build_model(parent_dims: Dict[str, int],
         return loss, output
 
     def init_optimizer_fun(params: Params) -> Tuple[OptimizerState, UpdateFn]:
-        #opt_init, opt_update, get_params = optimizers.momentum(step_size=lambda x: 0.0001, mass=0.5)
+        # opt_init, opt_update, get_params = optimizers.momentum(step_size=lambda x: 0.0001, mass=0.5)
         opt_init, opt_update, get_params = optimizers.adam(step_size=lambda x: 0.0002, b1=0.5)
 
         @jax.jit

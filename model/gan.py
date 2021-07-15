@@ -10,7 +10,7 @@ from jax.experimental import optimizers, stax
 from jax.experimental.optimizers import OptimizerState
 from jax.experimental.stax import Dense, Flatten, Relu, BatchNorm, Sigmoid, LeakyRelu, ConvTranspose
 
-from components.f_divergence import f_divergence
+from components.f_gan import f_divergence
 from model.train import ApplyFn, InitFn, InitOptimizerFn, Params, Tree, UpdateFn
 from jax.lax import stop_gradient
 
