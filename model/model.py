@@ -1,5 +1,4 @@
-import random
-from typing import Any, Dict, Tuple, Iterable, Callable, Optional
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -8,11 +7,11 @@ from jax.experimental import optimizers, stax
 from jax.experimental.optimizers import OptimizerState
 from jax.lax import stop_gradient
 
-from components.classifier import classifier, calc_accuracy, calc_cross_entropy
+from components.classifier import calc_accuracy, calc_cross_entropy, classifier
 from components.f_gan import f_gan
-from components.stax_layers import InitFn, ApplyFn, Shape, Array, StaxLayer
+from components.stax_layers import ApplyFn, Array, InitFn, Shape, StaxLayer
 from model.modes import get_layers
-from model.train import Params, UpdateFn, Model
+from model.train import Model, Params, UpdateFn
 
 
 # mechanism that acts on image based on categorical parent variable
@@ -120,7 +119,6 @@ def build_model(parent_dims: Dict[str, int],
         @jax.jit
         def update(i: int, opt_state: OptimizerState, inputs: Any, rng: Array) -> Tuple[OptimizerState, Array, Any]:
             (loss, outputs), grads = jax.value_and_grad(apply_fun, has_aux=True)(get_params(opt_state), inputs, rng)
-            # grads = (grads[0], jax.tree_map(lambda x: x * .1, grads[1]), grads[2])
             opt_state = opt_update(i, grads, opt_state)
 
             return opt_state, loss, outputs

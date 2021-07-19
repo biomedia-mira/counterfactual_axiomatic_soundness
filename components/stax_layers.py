@@ -1,5 +1,4 @@
-from typing import Callable, Tuple
-from typing import Union
+from typing import Callable, Tuple, Union
 
 import jax
 import jax.experimental.stax as stax

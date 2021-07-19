@@ -1,10 +1,10 @@
-from typing import Tuple, cast, Iterable
+from typing import Iterable, Tuple, cast
 
 import jax.numpy as jnp
 from jax.experimental import stax
 from jax.experimental.stax import Dense, Flatten, LogSoftmax
 
-from components.typing import InitFn, ApplyFn, StaxLayer
+from components.typing import ApplyFn, InitFn, StaxLayer
 
 
 def classifier(num_classes: int, layers: Iterable[StaxLayer]) -> Tuple[InitFn, ApplyFn]:

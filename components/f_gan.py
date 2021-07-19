@@ -2,10 +2,10 @@
 from typing import List, Tuple
 
 import jax.numpy as jnp
+from jax import grad, vmap
 from jax.experimental import stax
 from jax.experimental.stax import Dense, Flatten
 from jax.lax import stop_gradient
-from jax import vmap, grad
 from jax.tree_util import tree_map, tree_reduce
 
 

@@ -1,16 +1,15 @@
 import itertools
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
-from typing import Iterable, Tuple
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
 from jax.experimental.optimizers import OptimizerState, Params
-from datasets.confounded_mnist import image_gallery
 
 from components.typing import Array, Shape
+from datasets.confounded_mnist import image_gallery
 
 InitModelFn = Callable[[Array, Shape], Params]
 ApplyModelFn = Callable

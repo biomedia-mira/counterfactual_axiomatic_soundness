@@ -2,10 +2,8 @@ from typing import Tuple
 
 import jax.nn
 import jax.numpy as jnp
-from jax.experimental.stax import Conv, Dense, Relu, Sigmoid, BatchNorm, elementwise, ConvTranspose
+from jax.experimental.stax import Conv, Relu, Sigmoid, elementwise
 
-from components.stax_layers import layer_norm, conv_residual_block, unet
-from components.linear_attention import linear_attention_layer
 from components.mlp_mixer import mixer_layer
 
 
