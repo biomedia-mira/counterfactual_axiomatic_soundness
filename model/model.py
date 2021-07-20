@@ -9,34 +9,36 @@ from jax.lax import stop_gradient
 
 from components.classifier import calc_accuracy, calc_cross_entropy, classifier
 from components.f_gan import f_gan
-from components.stax_layers import ApplyFn, Array, InitFn, Shape, StaxLayer
+from components.typing import ApplyFn, Array, InitFn, PRNGKey, Shape, StaxLayer
 from model.modes import get_layers
 from model.train import Model, Params, UpdateFn
+from jax import partial
 
 
 # mechanism that acts on image based on categorical parent variable
 def mechanism(parent_name: str, parent_dims: Dict[str, int], layers: Iterable[StaxLayer]) -> Tuple[InitFn, ApplyFn]:
     extra_dims = sum(parent_dims.values()) + parent_dims[parent_name]
-    net_init_fun, net_apply_fun = stax.serial(*layers)
+    net_init_fn, net_apply_fn = stax.serial(*layers)
 
-    def init_fun(rng: Array, input_shape: Tuple[int, ...]) -> Tuple[Shape, Params]:
-        return net_init_fun(rng, (*input_shape[:-1], input_shape[-1] + extra_dims))
+    def init_fn(rng: PRNGKey, input_shape: Shape) -> Tuple[Shape, Params]:
+        return net_init_fn(rng, (*input_shape[:-1], input_shape[-1] + extra_dims))
 
-    def apply_fun(params: Params, inputs: Array, parents: Dict[str, Array], do_parent: Array) -> Array:
+    def apply_fn(params: Params, inputs: Array, parents: Dict[str, Array], do_parent: Array) -> Array:
         def broadcast(array: Array, shape: Tuple[int, ...]) -> Array:
             return jnp.broadcast_to(jnp.expand_dims(array, axis=tuple(range(1, 1 + len(shape) - array.ndim))), shape)
 
         parents_ = broadcast(jnp.concatenate([*parents.values(), do_parent], axis=-1), (*inputs.shape[:-1], extra_dims))
-        return net_apply_fun(params, jnp.concatenate((inputs, parents_), axis=-1))
+        return net_apply_fn(params, jnp.concatenate((inputs, parents_), axis=-1))
 
-    return init_fun, apply_fun
+    return init_fn, apply_fn
 
 
 def build_model(parent_dims: Dict[str, int],
                 marginals: Dict[str, Array],
                 input_shape: Shape,
                 mode: str,
-                img_decode_fn: Callable[[np.array], np.array]) -> Model:
+                img_decode_fn: Callable[[np.ndarray], np.ndarray],
+                cycle: bool = True) -> Model:
     classifier_layers, f_divergence_layers, mechanism_layers = get_layers(mode, input_shape)
     parent_names = list(parent_dims.keys())
     classifiers = {p_name: classifier(dim, layers=classifier_layers) for p_name, dim in parent_dims.items()}
@@ -45,80 +47,84 @@ def build_model(parent_dims: Dict[str, int],
     # this can be updated in the future for sequence of interventions
     interventions = tuple((parent_name,) for parent_name in parent_names)
 
-    def init_fun(rng: Array, input_shape: Shape) -> Params:
-        classifier_params = {p_name: _init_fun(rng, input_shape)[1] for p_name, (_init_fun, _) in classifiers.items()}
-        divergence_params = {p_name: _init_fun(rng, input_shape)[1] for p_name, (_init_fun, _) in divergences.items()}
-        mechanism_params = {p_name: _init_fun(rng, input_shape)[1] for p_name, (_init_fun, _) in mechanisms.items()}
+    def init_fn(rng: Array, input_shape: Shape) -> Params:
+        classifier_params = {p_name: _init_fn(rng, input_shape)[1] for p_name, (_init_fn, _) in classifiers.items()}
+        divergence_params = {p_name: _init_fn(rng, input_shape)[1] for p_name, (_init_fn, _) in divergences.items()}
+        mechanism_params = {p_name: _init_fn(rng, input_shape)[1] for p_name, (_init_fn, _) in mechanisms.items()}
         return classifier_params, divergence_params, mechanism_params
 
-    def classify(_apply_fun: ApplyFn, target: Array) -> Callable[[Params, Array], Tuple[Array, Dict[str, Array]]]:
-        def wrapper(_params: Params, image: Array) -> Tuple[Array, Dict[str, Array]]:
-            prediction = _apply_fun(_params, image)
-            cross_entropy, accuracy = calc_cross_entropy(prediction, target), calc_accuracy(prediction, target)
-            return cross_entropy, {'cross_entropy': cross_entropy, 'accuracy': accuracy}
+    def sample_parent_from_marginals(rng: PRNGKey, parent_name: str, batch_size: int) -> Array:
+        dim = parent_dims[parent_name]
+        return jnp.eye(dim)[jax.random.choice(rng, dim, shape=(batch_size,), p=marginals[parent_name])]
 
-        return wrapper
+    def classify(params: Params, parent_name: str, image: Array, target: Array) -> Tuple[Array, Any]:
+        (_, _classify), _classifier_params = classifiers[parent_name], params[0][parent_name]
+        prediction = _classify(_classifier_params, image)
+        cross_entropy, accuracy = calc_cross_entropy(prediction, target), calc_accuracy(prediction, target)
+        return cross_entropy, {'cross_entropy': cross_entropy, 'accuracy': accuracy}
 
-    def transform(mechanism_params: Params, image: Array, parents: Dict[str, Array], parent_name: str,
-                  rng: Array) -> Tuple[Array, Dict[str, Array], Any]:
-        (_, _apply_fun), _params = mechanisms[parent_name], mechanism_params[parent_name]
-        _do_parent = jax.random.choice(rng, parent_dims[parent_name], shape=image.shape[:1], p=marginals[parent_name])
-        do_parent = jnp.eye(parent_dims[parent_name])[_do_parent]
-        order = jnp.argsort(_do_parent)
-        do_image = _apply_fun(_params, image, parents, do_parent)
-        return do_image, {**parents, parent_name: do_parent}, {'image': image[order], 'do_image': do_image[order]}
-
-    def assert_dist(params: Params, do_image: Array, do_parents: Dict[str, Array], inputs: Any, target_dist: str) -> \
-            Tuple[Array, Any]:
-        classifier_params, divergence_params, mechanism_params = params
+    def assert_dist(params: Params, target_dist: str, inputs: Any, image: Array, parents: Dict[str, Array]) -> Tuple[Array, Any]:
         loss, output = jnp.zeros(()), {}
-        # Ensure image has the correct parents
-        for parent_name in parent_names:
-            (_, _apply_fun), _params = classifiers[parent_name], classifier_params[parent_name]
-            cross_entropy, output[parent_name] = classify(_apply_fun, do_parents[parent_name])(stop_gradient(_params),
-                                                                                               do_image)
+
+        for parent_name, parent in parents.items():
+            cross_entropy, output[parent_name] = classify(stop_gradient(params), parent_name, image, parent)
             loss = loss + cross_entropy
 
-        # Ensure image comes from correct distribution
+        (_, _calc_divergence), _divergence_params = divergences[target_dist], params[1][target_dist]
         image_target_dist, _ = inputs[target_dist]
-        (_, _apply_fun), _params = divergences[target_dist], divergence_params[target_dist]
-        divergence, disc_loss, gen_loss = _apply_fun(_params, image_target_dist, do_image)
-
-        # Mechanism minimises cross-entropy and divergence, discriminator maximises divergence
+        divergence, disc_loss, gen_loss = _calc_divergence(_divergence_params, image_target_dist, image)
         loss = loss + gen_loss - disc_loss
         return loss, {**output, 'divergence': divergence}
 
-    def apply_fun(params: Params, inputs: Any, rng: Array) -> Tuple[Array, Any]:
+    def intervene(params: Params, image: Array, parents: Dict[str, Array], do_parent_name: str, rng: PRNGKey,
+                  inputs: Any, source_dist: str, target_dist: str) -> Tuple[Array, Any]:
+
+        (_, _transform), _transform_params = mechanisms[do_parent_name], params[2][do_parent_name]
+
+        do_parent = sample_parent_from_marginals(rng, do_parent_name, batch_size=image.shape[0])
+        do_image, do_parents = _transform(_transform_params, image, parents, do_parent)
+        do_parents = {**parents, do_parent_name: do_parent}
+        loss, output = assert_dist(params, do_image, do_parents, inputs, target_dist)
+
+        order = jnp.argsort(jnp.argmax(do_parent, axis=-1))
+        output = {**output, 'image': image[order], 'do_image': do_image[order]}
+
+        if cycle:
+            image_cycle = _transform(_transform_params, do_image, do_parents, parents[do_parent_name])
+            loss_c, output_c = assert_dist(params, image_cycle, parents, inputs, source_dist)
+            output = {'forward': output, 'cycle': {**output_c, 'undo_image': image_cycle[order]}}
+            loss = loss + loss_c
+
+        return loss, output
+
+    def apply_fn(params: Params, inputs: Any, rng: Array) -> Tuple[Array, Any]:
         loss, output = jnp.zeros(()), {}
-        classifier_params, divergence_params, mechanism_params = params
 
         # Train the classifiers on unconfounded data
         for parent_name in parent_names:
             image, parents = inputs[parent_name]
-            (_, _apply_fun), _params = classifiers[parent_name], classifier_params[parent_name]
-            cross_entropy, output[parent_name] = classify(_apply_fun, parents[parent_name])(_params, image)
+            cross_entropy, output[parent_name] = classify(params, parent_name, image, parents[parent_name])
             loss = loss + cross_entropy
 
         # Transform the confounded data into to the target (unconfounded) distributions
-        image, parents = inputs['joint']
         for intervention in interventions:
-            do_image, do_parents = image, parents
+            (image, parents), source_dist = inputs['joint'], 'joint'
             for i, do_parent_name in enumerate(intervention):
                 target_dist = intervention[i] if i == 0 else set(intervention[:i + 1])
-                do_image, do_parents, output_t = transform(mechanism_params, do_image, do_parents, do_parent_name, rng)
-                loss_a, output_a = assert_dist(params, do_image, do_parents, inputs, target_dist)
-                loss = loss + loss_a
-                output['do_' + '_'.join(intervention[:i + 1])] = {**output_t, **output_a}
+                l, o = intervene(params, image, parents, do_parent_name, rng, inputs, source_dist, target_dist)
+                loss = loss + l
+                output['do_' + '_'.join(intervention[:i + 1])] = o
+                source_dist = target_dist
 
         return loss, output
 
-    def init_optimizer_fun(params: Params) -> Tuple[OptimizerState, UpdateFn]:
+    def init_optimizer_fn(params: Params) -> Tuple[OptimizerState, UpdateFn]:
         # opt_init, opt_update, get_params = optimizers.momentum(step_size=lambda x: 0.0001, mass=0.5)
         opt_init, opt_update, get_params = optimizers.adam(step_size=lambda x: 0.0002, b1=0.5)
 
         @jax.jit
         def update(i: int, opt_state: OptimizerState, inputs: Any, rng: Array) -> Tuple[OptimizerState, Array, Any]:
-            (loss, outputs), grads = jax.value_and_grad(apply_fun, has_aux=True)(get_params(opt_state), inputs, rng)
+            (loss, outputs), grads = jax.value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
             opt_state = opt_update(i, grads, opt_state)
 
             return opt_state, loss, outputs
@@ -152,4 +158,4 @@ def build_model(parent_dims: Dict[str, int],
     def log_output(output: Any) -> Any:
         return jax.tree_map(close_value, output)
 
-    return init_fun, apply_fun, init_optimizer_fun, accumulate_output, log_output
+    return init_fn, apply_fn, init_optimizer_fn, accumulate_output, log_output

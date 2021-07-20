@@ -1,10 +1,11 @@
-from typing import Callable, Tuple
+from typing import Any, Callable, Tuple, Union
 
 import jax.numpy as jnp
 from jax.experimental.optimizers import Params
 
-Array = jnp.ndarray
+Array = Union[jnp.ndarray, Any]
 Shape = Tuple[int, ...]
+PRNGKey = jnp.ndarray
 InitFn = Callable[[Array, Shape], Tuple[Shape, Params]]
 ApplyFn = Callable
-StaxLayer = Callable[..., Tuple[InitFn, ApplyFn]]
+StaxLayer = Tuple[InitFn, ApplyFn]
