@@ -1,5 +1,5 @@
 import itertools
-from typing import Dict, Tuple, Callable
+from typing import Dict, Tuple, Callable, Optional
 
 import numpy as np
 import tensorflow as tf
@@ -52,10 +52,11 @@ def get_marginal_datasets(dataset: tf.data.Dataset, parent_dims: Dict[str, int])
 
 
 def get_unconfounded_datasets(dataset: tf.data.Dataset, parent_dims: Dict[str, int], batch_size: int, img_encode_fn,
-                              cache_filename: str, buffer_size: int = 60000) \
+                              cache_filename: Optional[str] = '', buffer_size: int = 60000) \
         -> Tuple[tf.data.Dataset, Dict[str, np.ndarray]]:
-    dataset = dataset.cache(filename=cache_filename)
+
     dataset, marginals = get_marginal_datasets(dataset, parent_dims)
+    dataset = dataset.cache(filename=cache_filename)
     dataset = dataset.shuffle(buffer_size=buffer_size, reshuffle_each_iteration=True)
     dataset = dataset.batch(batch_size, drop_remainder=True)
 

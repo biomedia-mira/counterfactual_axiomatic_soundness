@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Set, FrozenSet
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple, FrozenSet
 
 import jax
 import jax.numpy as jnp
@@ -6,13 +6,13 @@ import numpy as np
 from jax.experimental import optimizers, stax
 from jax.experimental.optimizers import OptimizerState
 from jax.lax import stop_gradient
+from more_itertools import powerset
 
 from components.classifier import calc_accuracy, calc_cross_entropy, classifier
 from components.f_gan import f_gan
 from components.typing import ApplyFn, Array, InitFn, PRNGKey, Shape, StaxLayer
 from model.modes import get_layers
 from model.train import Model, Params, UpdateFn
-from more_itertools import powerset
 
 
 # mechanism that acts on image based on categorical parent variable
@@ -33,12 +33,8 @@ def mechanism(parent_name: str, parent_dims: Dict[str, int], layers: Iterable[St
     return init_fn, apply_fn
 
 
-def build_model(parent_dims: Dict[str, int],
-                marginals: Dict[str, Array],
-                input_shape: Shape,
-                mode: str,
-                img_decode_fn: Callable[[np.ndarray], np.ndarray],
-                cycle: bool = False) -> Model:
+def build_model(parent_dims: Dict[str, int], marginals: Dict[str, Array], input_shape: Shape, mode: str,
+                img_decode_fn: Callable[[np.ndarray], np.ndarray], cycle: bool = False) -> Model:
     classifier_layers, f_gan_layers, mechanism_layers = get_layers(mode, input_shape)
     parent_names = list(parent_dims.keys())
     classifiers = {p_name: classifier(dim, layers=classifier_layers) for p_name, dim in parent_dims.items()}
@@ -112,7 +108,7 @@ def build_model(parent_dims: Dict[str, int],
                 if cycle:
                     image_cycle, _, _ = transform(params, do_parent_name, do_image, do_parents, do_parent, order)
                     loss_a, output_a = assert_dist(params, source_dist, inputs, image_cycle, parents)
-                    output[intervention_name].update({'image_cycle': image_cycle, 'cycle': output_a})
+                    output[intervention_name].update({'image_cycle': image_cycle[order], 'cycle': output_a})
                     loss = loss + loss_a
 
                 image, parents, source_dist = do_image, do_parents, target_dist
@@ -136,8 +132,8 @@ def build_model(parent_dims: Dict[str, int],
 
     # evaluation
     def update_value(value: Array, new_value: Array) -> Array:
-        return value + new_value if value.size == 1 else (
-            jnp.concatenate((value, new_value)) if value.ndim == 1 else new_value)
+        return value + new_value if value.size == 1 \
+            else (jnp.concatenate((value, new_value)) if value.ndim == 1 else new_value)
 
     def close_value(value: Array) -> Array:
         return value if value.size == 1 else (jnp.mean(value) if value.ndim == 1 else img_decode_fn(value))
