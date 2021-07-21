@@ -11,7 +11,7 @@ from datasets.jpeg import get_jpeg_encode_decode_fns
 MechanismFn = Callable[[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]], Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]]
 
 
-def image_gallery(array: np.ndarray, ncols: int = 8):
+def image_gallery(array: np.ndarray, ncols: int = 8) -> np.ndarray:
     array = np.clip(array, a_min=0, a_max=255) / 255.
     array = array[:128]
     nindex, height, width, intensity = array.shape
@@ -118,7 +118,7 @@ def rgb_encode_fn(image: tf.Tensor) -> tf.Tensor:
 
 
 def prepare_dataset(dataset: tf.data.Dataset, batch_size: int, parent_dims, img_encode_fn) -> Tuple[
-    tf.data.Dataset, Callable[[np.array], np.array]]:
+    tf.data.Dataset, Callable[[np.array], np.ndarray]]:
     dataset = dataset.cache()
     dataset = dataset.shuffle(buffer_size=60000, reshuffle_each_iteration=True)
     dataset = dataset.batch(batch_size, drop_remainder=True)
