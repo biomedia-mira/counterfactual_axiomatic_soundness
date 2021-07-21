@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Set, FrozenSet
 
 import jax
 import jax.numpy as jnp
@@ -12,6 +12,7 @@ from components.f_gan import f_gan
 from components.typing import ApplyFn, Array, InitFn, PRNGKey, Shape, StaxLayer
 from model.modes import get_layers
 from model.train import Model, Params, UpdateFn
+from more_itertools import powerset
 
 
 # mechanism that acts on image based on categorical parent variable
@@ -38,17 +39,18 @@ def build_model(parent_dims: Dict[str, int],
                 mode: str,
                 img_decode_fn: Callable[[np.ndarray], np.ndarray],
                 cycle: bool = False) -> Model:
-    classifier_layers, f_divergence_layers, mechanism_layers = get_layers(mode, input_shape)
+    classifier_layers, f_gan_layers, mechanism_layers = get_layers(mode, input_shape)
     parent_names = list(parent_dims.keys())
     classifiers = {p_name: classifier(dim, layers=classifier_layers) for p_name, dim in parent_dims.items()}
-    divergences = {p_name: f_gan(mode='gan', layers=f_divergence_layers, trick_g=True) for p_name in parent_dims.keys()}
-    mechanisms = {p_name: mechanism(p_name, parent_dims, layers=mechanism_layers) for p_name in parent_dims.keys()}
+    divergences = {frozenset(key): f_gan(mode='gan', layers=f_gan_layers, trick_g=True) for key in
+                   powerset(parent_names)}
+    mechanisms = {p_name: mechanism(p_name, parent_dims, layers=mechanism_layers) for p_name in parent_names}
     # this can be updated in the future for sequence of interventions
     interventions = tuple((parent_name,) for parent_name in parent_names)  # uniqueness must be asserted
 
     def init_fn(rng: Array, input_shape: Shape) -> Params:
         classifier_params = {p_name: _init_fn(rng, input_shape)[1] for p_name, (_init_fn, _) in classifiers.items()}
-        divergence_params = {p_name: _init_fn(rng, input_shape)[1] for p_name, (_init_fn, _) in divergences.items()}
+        divergence_params = {key: _init_fn(rng, input_shape)[1] for key, (_init_fn, _) in divergences.items()}
         mechanism_params = {p_name: _init_fn(rng, input_shape)[1] for p_name, (_init_fn, _) in mechanisms.items()}
         return classifier_params, divergence_params, mechanism_params
 
@@ -69,7 +71,7 @@ def build_model(parent_dims: Dict[str, int],
         do_parents = {**parents, do_parent_name: do_parent}
         return do_image, do_parents, {'image': image[order], 'do_image': do_image[order]}
 
-    def assert_dist(params: Params, target_dist: str, inputs: Any, image: Array, parents: Dict[str, Array]) \
+    def assert_dist(params: Params, target_dist: FrozenSet[str], inputs: Any, image: Array, parents: Dict[str, Array]) \
             -> Tuple[Array, Any]:
         loss, output = jnp.zeros(()), {}
         # Assert the parents are correct
@@ -88,15 +90,16 @@ def build_model(parent_dims: Dict[str, int],
 
         # Train the classifiers on unconfounded data
         for parent_name in parent_names:
-            image, parents = inputs[parent_name]
+            image, parents = inputs[frozenset((parent_name,))]
             cross_entropy, output[parent_name] = classify(params, parent_name, image, parents[parent_name])
             loss = loss + cross_entropy
 
         # Transform the confounded data into to the target (unconfounded) distributions
         for intervention in interventions:
-            (image, parents), source_dist = inputs['joint'], 'joint'
+            source_dist: FrozenSet[str] = frozenset()  # empty set represents joint distribution
+            (image, parents) = inputs[source_dist]
             for i, do_parent_name in enumerate(intervention):
-                target_dist = intervention[i] if i == 0 else set(intervention[:i + 1])
+                target_dist = frozenset(intervention[:i + 1])
                 intervention_name = 'do_' + '_'.join(intervention[:i + 1])
 
                 do_parent, order = sample_parent_from_marginals(rng, do_parent_name, batch_size=image.shape[0])
@@ -133,20 +136,11 @@ def build_model(parent_dims: Dict[str, int],
 
     # evaluation
     def update_value(value: Array, new_value: Array) -> Array:
-        if value.size == 1:
-            return value + new_value
-        elif value.ndim == 1:
-            return jnp.concatenate((value, new_value))
-        else:
-            return new_value
+        return value + new_value if value.size == 1 else (
+            jnp.concatenate((value, new_value)) if value.ndim == 1 else new_value)
 
     def close_value(value: Array) -> Array:
-        if value.size == 1:
-            return value
-        elif value.ndim == 1:
-            return jnp.mean(value)
-        else:
-            return img_decode_fn(value)
+        return value if value.size == 1 else (jnp.mean(value) if value.ndim == 1 else img_decode_fn(value))
 
     def accumulate_output(new_output: Any, cum_output: Optional[Any]) -> Any:
         to_cpu = jax.partial(jax.device_put, device=jax.devices('cpu')[0])

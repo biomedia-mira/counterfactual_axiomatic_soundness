@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Callable, Dict, List, Tuple
 
 import matplotlib.pyplot as plt
@@ -101,7 +100,7 @@ def create_confounded_mnist_dataset(batch_size: int, debug: bool = True, jpeg_en
     dataset = apply_mechanisms_to_dataset(ds_train, [colorize_fun])
 
     # Get unconfounded datasets by looking at the parents
-    cache_filename = Path('/tmp/cached_confounded_mnist')
+    cache_filename = '/tmp/cached_confounded_mnist'
     dataset, marginals = get_unconfounded_datasets(dataset, parent_dims, batch_size, img_encode_fn, cache_filename)
 
     if debug:

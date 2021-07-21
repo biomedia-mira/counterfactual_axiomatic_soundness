@@ -1,10 +1,10 @@
 import itertools
-from pathlib import Path
-from typing import Dict, Tuple, Iterable, Callable
+from typing import Dict, Tuple, Callable
 
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
+from more_itertools import powerset
 
 
 def image_gallery(array: np.ndarray, ncols: int = 8, num_images_to_display: int = 128) -> np.ndarray:
@@ -18,11 +18,6 @@ def image_gallery(array: np.ndarray, ncols: int = 8, num_images_to_display: int 
               .swapaxes(1, 2)
               .reshape(height * nrows, width * ncols, intensity))
     return result
-
-
-def powerset(iterable: Iterable) -> Iterable:
-    s = list(iterable)
-    return itertools.chain.from_iterable(itertools.combinations(s, r) for r in range(len(s) + 1))
 
 
 def get_resample_fn(num_repeats: tf.Tensor) -> Callable[[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]], tf.data.Dataset]:
@@ -49,15 +44,15 @@ def get_marginal_datasets(dataset: tf.data.Dataset, parent_dims: Dict[str, int])
         dist = marginal_dist * np.sum(joint_dist, axis=axes, keepdims=True)
         weights = dist / counts
         num_repeats = tf.convert_to_tensor(np.round(weights / np.min(weights)).astype(int))
-        datasets[set(parent_set)] = dataset.flat_map(get_resample_fn(num_repeats))
+        datasets[frozenset(parent_set)] = dataset.flat_map(get_resample_fn(num_repeats))
         if len(parent_set) == 1:
-            marginals[parent_set.pop()] = np.squeeze(marginal_dist)
+            marginals[parent_set[0]] = np.squeeze(marginal_dist)
 
     return tf.data.Dataset.zip(datasets), marginals
 
 
 def get_unconfounded_datasets(dataset: tf.data.Dataset, parent_dims: Dict[str, int], batch_size: int, img_encode_fn,
-                              cache_filename: Path, buffer_size: int = 60000) \
+                              cache_filename: str, buffer_size: int = 60000) \
         -> Tuple[tf.data.Dataset, Dict[str, np.ndarray]]:
     dataset = dataset.cache(filename=cache_filename)
     dataset, marginals = get_marginal_datasets(dataset, parent_dims)
@@ -70,6 +65,6 @@ def get_unconfounded_datasets(dataset: tf.data.Dataset, parent_dims: Dict[str, i
         return img_encode_fn(image), parents
 
     dataset = dataset.map(lambda d: {key: encode(*value) for key, value in d.items()})
-    dataset = tfds.as_numpy(dataset)
     dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
+    dataset = tfds.as_numpy(dataset)
     return dataset, marginals
