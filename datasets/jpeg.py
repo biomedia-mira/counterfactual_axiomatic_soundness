@@ -94,6 +94,7 @@ def get_jpeg_encode_decode_fns(max_seq_len: int, block_size: Tuple[int, int] = (
 
     def get_padding(dim_len: int, block_len: int) -> Tuple[int, int]:
         block_len = block_len * 2 if chroma_subsample else block_len
+        # there is issue here ((dim_len // block_len + 1) * block_len - dim_len)) % block_len?
         total_pad = int((dim_len // block_len + 1) * block_len - dim_len)
         return total_pad // 2, total_pad // 2 + total_pad % 2
 

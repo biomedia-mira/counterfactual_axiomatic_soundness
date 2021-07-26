@@ -1,12 +1,15 @@
+from functools import partial
 from typing import Callable, Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
+from scipy.ndimage import gaussian_filter
 
 from datasets.jpeg import get_jpeg_encode_decode_fns
-from datasets.utils import image_gallery, get_unconfounded_datasets
+from datasets.morphomnist.perturb import ImageMorphology, Swelling
+from datasets.utils import get_unconfounded_datasets, image_gallery
 
 MechanismFn = Callable[[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]], Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]]
 
@@ -28,19 +31,52 @@ def get_diagonal_confusion_matrix(num_rows: int, num_columns: int, noise: float 
             num_rows - 1)
 
 
-def get_colorize_fn(cm: np.ndarray, labels: np.ndarray) -> MechanismFn:
-    color_indices = tf.convert_to_tensor(list(map(lambda label: np.random.choice(cm.shape[1], p=cm[label]), labels)),
-                                         dtype=tf.int64)
+# def get_colorize_fn(cm: np.ndarray, labels: np.ndarray) -> MechanismFn:
+#     color_indices = tf.convert_to_tensor(list(map(lambda label: np.random.choice(cm.shape[1], p=cm[label]), labels)),
+#                                          dtype=tf.int64)
+#     colors = tf.convert_to_tensor(((1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (0, 1, 1), (1, 1, 1),
+#                                    (.5, 0, 0), (0, .5, 0), (0, 0, .5)))
+#
+#     def colorize_fn(index: tf.Tensor, image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[
+#         tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]:
+#         color_idx = color_indices[index]
+#         parents.update({'color': color_idx})
+#         return index, tf.concat([image] * 3, axis=-1) * tf.reshape(colors[color_idx], (1, 1, 3)), parents
+#
+#     return colorize_fn
+
+
+def get_perturbation_fn(parent_name: str, cm: np.ndarray, digit: np.ndarray,
+                        perturbation_fns: List[Callable[[tf.Tensor], tf.Tensor]]):
+    assert cm.shape[1] == len(perturbation_fns)
+    indices = tf.convert_to_tensor(list(map(lambda label: np.random.choice(cm.shape[1], p=cm[label]), digit)),
+                                   dtype=tf.int64)
+
+    def perturbation_fn(index: tf.Tensor, image: tf.Tensor, parents: Dict[str, tf.Tensor]) \
+            -> Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]:
+        idx = indices[index]
+        perturbed_image = perturbation_fns[idx](image)
+        return index, perturbed_image, {**parents, parent_name: idx}
+
+    return perturbation_fn
+
+
+def colorize(image: tf.Tensor, color: tf.Tensor) -> tf.Tensor:
+    return tf.concat([image] * 3, axis=-1) * tf.reshape(color, (1, 1, 3))
+
+
+def swell(image: np.ndarray, sigma: float = 1.):
+    return gaussian_filter(Swelling()(ImageMorphology(image)).astype(np.float32), sigma=sigma)
+
+
+def get_colorize_fn(digit: np.ndarray):
     colors = tf.convert_to_tensor(((1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (0, 1, 1), (1, 1, 1),
                                    (.5, 0, 0), (0, .5, 0), (0, 0, .5)))
-
-    def colorize_fn(index: tf.Tensor, image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[
-        tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]:
-        color_idx = color_indices[index]
-        parents.update({'color': color_idx})
-        return index, tf.concat([image] * 3, axis=-1) * tf.reshape(colors[color_idx], (1, 1, 3)), parents
-
-    return colorize_fn
+    train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1)
+    test_colorize_cm = get_uniform_confusion_matrix(10, 10)
+    colorize_fns = [partial(colorize, color) for color in colors]
+    colorize_fn = get_perturbation_fn('color', train_colorize_cm, digit, colorize_fns)
+    return [colorize_fn]
 
 
 def apply_mechanisms_to_dataset(dataset: tf.data.Dataset, mechanisms: List[MechanismFn]) -> tf.data.Dataset:
