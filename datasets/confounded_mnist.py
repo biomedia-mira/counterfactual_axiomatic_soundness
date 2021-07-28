@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,80 +11,9 @@ from datasets.jpeg import get_jpeg_encode_decode_fns
 from datasets.morphomnist.perturb import ImageMorphology, Swelling
 from datasets.utils import get_unconfounded_datasets, image_gallery
 
+tf.config.experimental.set_visible_devices([], 'GPU')
+
 MechanismFn = Callable[[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]], Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]]
-
-
-def get_uniform_confusion_matrix(num_rows: int, num_columns: int) -> np.ndarray:
-    return np.ones((num_rows, num_columns)) / num_columns
-
-
-def get_random_confusion_matrix(num_rows: int, num_columns: int, temperature: float = .1, seed: int = 1) -> np.ndarray:
-    random_state = np.random.RandomState(seed=seed)
-    logits = random_state.random(size=(num_rows, num_columns))
-    tmp = np.exp(logits / temperature)
-    return tmp / tmp.sum(1, keepdims=True)
-
-
-def get_diagonal_confusion_matrix(num_rows: int, num_columns: int, noise: float = 0.) -> np.ndarray:
-    assert num_rows == num_columns
-    return (np.eye(num_rows) * (1. - noise)) + (np.ones((num_rows, num_rows)) - np.eye(num_rows)) * noise / (
-            num_rows - 1)
-
-
-# def get_colorize_fn(cm: np.ndarray, labels: np.ndarray) -> MechanismFn:
-#     color_indices = tf.convert_to_tensor(list(map(lambda label: np.random.choice(cm.shape[1], p=cm[label]), labels)),
-#                                          dtype=tf.int64)
-#     colors = tf.convert_to_tensor(((1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (0, 1, 1), (1, 1, 1),
-#                                    (.5, 0, 0), (0, .5, 0), (0, 0, .5)))
-#
-#     def colorize_fn(index: tf.Tensor, image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[
-#         tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]:
-#         color_idx = color_indices[index]
-#         parents.update({'color': color_idx})
-#         return index, tf.concat([image] * 3, axis=-1) * tf.reshape(colors[color_idx], (1, 1, 3)), parents
-#
-#     return colorize_fn
-
-
-def get_perturbation_fn(parent_name: str, cm: np.ndarray, digit: np.ndarray,
-                        perturbation_fns: List[Callable[[tf.Tensor], tf.Tensor]]):
-    assert cm.shape[1] == len(perturbation_fns)
-    indices = tf.convert_to_tensor(list(map(lambda label: np.random.choice(cm.shape[1], p=cm[label]), digit)),
-                                   dtype=tf.int64)
-
-    def perturbation_fn(index: tf.Tensor, image: tf.Tensor, parents: Dict[str, tf.Tensor]) \
-            -> Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]:
-        idx = indices[index]
-        perturbed_image = perturbation_fns[idx](image)
-        return index, perturbed_image, {**parents, parent_name: idx}
-
-    return perturbation_fn
-
-
-def colorize(image: tf.Tensor, color: tf.Tensor) -> tf.Tensor:
-    return tf.concat([image] * 3, axis=-1) * tf.reshape(color, (1, 1, 3))
-
-
-def swell(image: np.ndarray, sigma: float = 1.):
-    return gaussian_filter(Swelling()(ImageMorphology(image)).astype(np.float32), sigma=sigma)
-
-
-def get_colorize_fn(digit: np.ndarray):
-    colors = tf.convert_to_tensor(((1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (0, 1, 1), (1, 1, 1),
-                                   (.5, 0, 0), (0, .5, 0), (0, 0, .5)))
-    train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1)
-    test_colorize_cm = get_uniform_confusion_matrix(10, 10)
-    colorize_fns = [partial(colorize, color) for color in colors]
-    colorize_fn = get_perturbation_fn('color', train_colorize_cm, digit, colorize_fns)
-    return [colorize_fn]
-
-
-def apply_mechanisms_to_dataset(dataset: tf.data.Dataset, mechanisms: List[MechanismFn]) -> tf.data.Dataset:
-    dataset = dataset.map(lambda image, label: (tf.cast(image, tf.float32), {'digit': label}))
-    dataset = dataset.enumerate().map(lambda index, data: (index, data[0], data[1]))
-    for mechanism in mechanisms:
-        dataset = dataset.map(mechanism, num_parallel_calls=tf.data.AUTOTUNE)
-    return dataset
 
 
 def get_jpeg_encoding_decoding_fns(max_seq_len: int, image_shape: Tuple[int, int, int]):
@@ -111,7 +40,76 @@ def rgb_decode_fn(image: np.ndarray) -> np.ndarray:
 
 
 def rgb_encode_fn(image: tf.Tensor) -> tf.Tensor:
-    return image / tf.convert_to_tensor(255.)
+    return image / tf.constant(255.)
+
+
+def get_uniform_confusion_matrix(num_rows: int, num_columns: int) -> np.ndarray:
+    return np.ones((num_rows, num_columns)) / num_columns
+
+
+def get_random_confusion_matrix(num_rows: int, num_columns: int, temperature: float = .1, seed: int = 1) -> np.ndarray:
+    random_state = np.random.RandomState(seed=seed)
+    logits = random_state.random(size=(num_rows, num_columns))
+    tmp = np.exp(logits / temperature)
+    return tmp / tmp.sum(1, keepdims=True)
+
+
+def get_diagonal_confusion_matrix(num_rows: int, num_columns: int, noise: float = 0.) -> np.ndarray:
+    assert num_rows == num_columns
+    return (np.eye(num_rows) * (1. - noise)) + (np.ones((num_rows, num_rows)) - np.eye(num_rows)) * noise / (
+            num_rows - 1)
+
+
+def get_mechanism_fn(parent_name: str, digit: np.ndarray, cm: np.ndarray,
+                     functions: List[Callable[[tf.Tensor], tf.Tensor]]):
+    assert cm.shape[1] == len(functions)
+    indices = tf.constant(list(map(lambda label: np.random.choice(cm.shape[1], p=cm[label]), digit)), dtype=tf.int64)
+
+    def apply_fn(index: tf.Tensor, image: tf.Tensor, parents: Dict[str, tf.Tensor]) \
+            -> Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor]]:
+        idx = indices[index]
+        image = tf.switch_case(tf.cast(idx, tf.int32), {i: partial(fn, image=image) for i, fn in enumerate(functions)})
+        return index, image, {**parents, parent_name: idx}
+
+    return apply_fn
+
+
+def colorize(image: tf.Tensor, color: tf.Tensor) -> tf.Tensor:
+    return tf.concat([image] * 3, axis=-1) * tf.reshape(color, (1, 1, 3))
+
+
+@tf.function(input_signature=[tf.TensorSpec(None, tf.float32)])
+def swell(image: tf.Tensor, sigma: float = .5) -> tf.Tensor:
+    def _swell(_image: np.ndarray) -> Any:
+        return np.expand_dims(
+            gaussian_filter(Swelling()(ImageMorphology(_image[..., 0])).astype(np.float32), sigma=sigma), -1)
+
+    return tf.numpy_function(_swell, [image], tf.float32)
+
+
+def get_mechanisms(digit: np.ndarray) -> List[MechanismFn]:
+    colors = tf.constant(((1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1),
+                          (0, 1, 1), (1, 1, 1), (.5, 0, 0), (0, .5, 0), (0, 0, .5)))
+    train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1)
+    test_colorize_cm = get_uniform_confusion_matrix(10, 10)
+    colorize_fns = [partial(colorize, color=color) for color in colors]
+    colorize_fn = get_mechanism_fn('color', digit, train_colorize_cm, colorize_fns)
+
+    # even digits have much higher chance of swelling
+    train_swell_cm = np.zeros(shape=(10, 2))
+    train_swell_cm[0:-1:2] = (.1, .9)
+    train_swell_cm[1::2] = (.9, .1)
+    swelling_fn = get_mechanism_fn('swell', digit, train_swell_cm, [lambda x: x, swell])
+
+    return [colorize_fn]
+
+
+def apply_mechanisms_to_dataset(dataset: tf.data.Dataset, mechanisms: List[MechanismFn]) -> tf.data.Dataset:
+    dataset = dataset.map(lambda image, label: (tf.cast(image, tf.float32), {'digit': label}))
+    dataset = dataset.enumerate().map(lambda index, data: (index, data[0], data[1]))
+    for mechanism in mechanisms:
+        dataset = dataset.map(mechanism, num_parallel_calls=tf.data.AUTOTUNE)
+    return dataset
 
 
 def create_confounded_mnist_dataset(batch_size: int, debug: bool = True, jpeg_encode: bool = True):
@@ -131,9 +129,8 @@ def create_confounded_mnist_dataset(batch_size: int, debug: bool = True, jpeg_en
         input_shape = (-1, *image_shape)
 
     # Confound the dataset artificially
-    colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1)
-    colorize_fun = get_colorize_fn(colorize_cm, train_targets)
-    dataset = apply_mechanisms_to_dataset(ds_train, [colorize_fun])
+    mechanisms = get_mechanisms(train_targets)
+    dataset = apply_mechanisms_to_dataset(ds_train, mechanisms)
 
     # Get unconfounded datasets by looking at the parents
     cache_filename = '/tmp/cached_confounded_mnist'
@@ -144,5 +141,4 @@ def create_confounded_mnist_dataset(batch_size: int, debug: bool = True, jpeg_en
             order = np.argsort(np.argmax(data[1]['digit'], axis=1))
             plt.imshow(image_gallery(img_decode_fn(data[0])[order]))
             plt.show()
-
     return dataset, parent_dims, marginals, img_decode_fn, input_shape
