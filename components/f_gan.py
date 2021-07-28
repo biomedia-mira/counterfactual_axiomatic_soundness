@@ -90,7 +90,7 @@ def get_activation_and_f_conj(mode: str) -> FDivType:
         raise ValueError(f'Unsupported divergence: {mode}.')
 
 
-def f_gan(mode: str, layers: Iterable[StaxLayer], trick_g: bool = False, gradient_penalty: bool = False) -> StaxLayer:
+def f_gan(layers: Iterable[StaxLayer], mode: str = 'gan', trick_g: bool = False, gradient_penalty: bool = False) -> StaxLayer:
     activation, f_conj = get_activation_and_f_conj(mode)
     init_fun, net_apply_fun = stax.serial(*layers, Flatten, Dense(1))
 
