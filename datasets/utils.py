@@ -9,7 +9,7 @@ from more_itertools import powerset
 
 def image_gallery(array: np.ndarray, ncols: int = 8, num_images_to_display: int = 128) -> np.ndarray:
     array = np.clip(array, a_min=0, a_max=255) / 255.
-    array = array[:num_images_to_display]
+    array = array[::len(array)//num_images_to_display]
     nindex, height, width, intensity = array.shape
     nrows = nindex // ncols + int(bool(nindex % ncols))
     pad = np.zeros(shape=(nrows * ncols - nindex, height, width, intensity))

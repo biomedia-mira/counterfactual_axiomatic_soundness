@@ -90,14 +90,9 @@ def get_activation_and_f_conj(mode: str) -> FDivType:
         raise ValueError(f'Unsupported divergence: {mode}.')
 
 
-def f_gan(layers: Iterable[StaxLayer], mode: str = 'gan', trick_g: bool = False, gradient_penalty: bool = False) -> StaxLayer:
+def f_gan(layers: Iterable[StaxLayer], mode: str = 'gan', trick_g: bool = False) -> StaxLayer:
     activation, f_conj = get_activation_and_f_conj(mode)
     init_fun, net_apply_fun = stax.serial(*layers, Flatten, Dense(1))
-
-    def calc_gradient_penalty(params: Params, p_sample: Array) -> Array:
-        _p = vmap(lambda y: grad(lambda p, x: activation(net_apply_fun(params, x)[0, 0]))(params, y[jnp.newaxis]))(
-            p_sample)
-        return tree_reduce(lambda x, y: x + y, tree_map(lambda x: jnp.sum(x ** 2.), _p)) / len(p_sample)
 
     def calc_divergence(params: Params, p_sample: Array, q_sample: Array) -> Array:
         t_p_dist = net_apply_fun(params, p_sample)
@@ -106,7 +101,7 @@ def f_gan(layers: Iterable[StaxLayer], mode: str = 'gan', trick_g: bool = False,
 
     def apply_fun(params: Params, p_sample: Array, q_sample: Array) -> Tuple[Array, Array, Array]:
         divergence = calc_divergence(params, p_sample, stop_gradient(q_sample))
-        disc_loss = divergence + (calc_gradient_penalty(params, p_sample) if gradient_penalty else 0.)
+        disc_loss = divergence
         if not trick_g:
             gen_loss = calc_divergence(stop_gradient(params), p_sample, q_sample)
         else:

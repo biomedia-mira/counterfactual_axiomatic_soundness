@@ -18,7 +18,7 @@ if __name__ == '__main__':
     mode = 'rgb'
     noise_dim = 10
     train_data, parent_dims, marginals, img_decode_fn, input_shape = \
-        create_confounded_mnist_dataset(batch_size=128, debug=True, jpeg_encode=True if mode == 'jpeg' else False)
+        create_confounded_mnist_dataset(batch_size=1024, debug=True, jpeg_encode=True if mode == 'jpeg' else False)
     model = build_model(parent_dims, marginals, input_shape, noise_dim, mode, img_decode_fn, cycle=False)
     test_data = None
     train(model=model,

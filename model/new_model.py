@@ -9,7 +9,6 @@ from jax.experimental.stax import Flatten, Dense, Sigmoid
 from jax.lax import stop_gradient
 from more_itertools import powerset
 
-from components.classifier import calc_accuracy, calc_cross_entropy, classifier
 from components.f_gan import f_gan
 from components.typing import Array, PRNGKey, Shape, StaxLayer
 from model.modes import get_layers
@@ -60,8 +59,10 @@ def divergence(parent_dims: Dict[str, int], noise_dim: int, layers: Iterable[Sta
 
     def apply_fn(params: Params, inputs_r: Array, parents_r: Dict[str, Array], inputs_g: Array,
                  parents_g: Dict[str, Array]) -> Array:
-        return _apply_fn(params, concat_inputs(inputs_r, *parents_r.values()),
-                         concat_inputs(inputs_g, *parents_g.values()))
+        _divergence, disc_loss, gen_loss = _apply_fn(params, concat_inputs(inputs_r, *parents_r.values()),
+                                                     concat_inputs(inputs_g, *parents_g.values()))
+        loss = gen_loss - disc_loss
+        return loss, _divergence, gen_loss
 
     return init_fn, apply_fn
 
@@ -72,93 +73,64 @@ def l2(x: Array, y: Array) -> Array:
 
 def build_model(parent_dims: Dict[str, int], marginals: Dict[str, Array], input_shape: Shape, noise_dim: int,
                 mode: str, img_decode_fn: Callable[[np.ndarray], np.ndarray], cycle: bool = False) -> Model:
-    disc_layers, mechanism_layers = get_layers(mode, input_shape)
+    disc_layers, gen_layers = get_layers(mode, input_shape)
     parent_names = list(parent_dims.keys())
-    classifiers = {p_name: classifier(dim, disc_layers) for p_name, dim in parent_dims.items()}
-    divergences = {frozenset(key): divergence(parent_dims, noise_dim, disc_layers) for key in powerset(parent_names)}
-    mechanisms = {p_name: mechanism(p_name, parent_dims, noise_dim, mechanism_layers) for p_name in parent_names}
     abductions = {p_name: abduction(parent_dims, noise_dim, disc_layers) for p_name in parent_names}
+    mechanisms = {p_name: mechanism(p_name, parent_dims, noise_dim, gen_layers) for p_name in parent_names}
+    divergences = {frozenset(key): divergence(parent_dims, noise_dim, disc_layers) for key in powerset(parent_names)}
     # this can be updated in the future for sequence of interventions
     interventions = tuple((parent_name,) for parent_name in parent_names)  # uniqueness must be asserted
 
     def init_fn(rng: Array, input_shape: Shape) -> Params:
-        classifier_params = {p_name: _init_fn(rng, input_shape)[1] for p_name, (_init_fn, _) in classifiers.items()}
-        divergence_params = {key: _init_fn(rng, input_shape)[1] for key, (_init_fn, _) in divergences.items()}
-        mechanism_params = {p_name: _init_fn(rng, input_shape)[1] for p_name, (_init_fn, _) in mechanisms.items()}
         abductor_params = {p_name: _init_fn(rng, input_shape)[1] for p_name, (_init_fn, _) in abductions.items()}
-        return classifier_params, divergence_params, mechanism_params, abductor_params
+        mechanism_params = {p_name: _init_fn(rng, input_shape)[1] for p_name, (_init_fn, _) in mechanisms.items()}
+        divergence_params = {key: _init_fn(rng, input_shape)[1] for key, (_init_fn, _) in divergences.items()}
+        return abductor_params, mechanism_params, divergence_params
 
     def sample_parent_from_marginals(rng: PRNGKey, parent_name: str, batch_size: int) -> Tuple[Array, Array]:
         _do_parent = jax.random.choice(rng, parent_dims[parent_name], shape=(batch_size,), p=marginals[parent_name])
         return jnp.eye(parent_dims[parent_name])[_do_parent], jnp.argsort(_do_parent)
 
-    def classify(params: Params, parent_name: str, image: Array, target: Array) -> Tuple[Array, Any]:
-        (_, _classify), _classifier_params = classifiers[parent_name], params[0][parent_name]
-        prediction = _classify(_classifier_params, image)
-        cross_entropy, accuracy = calc_cross_entropy(prediction, target), calc_accuracy(prediction, target)
-        return cross_entropy, {'cross_entropy': cross_entropy, 'accuracy': accuracy}
-
-    def transform(params: Params, do_parent_name: str, image: Array, parents: Dict[str, Array], do_parent: Array,
-                  do_noise: Array) -> Tuple[Array, Dict[str, Array]]:
-        (_, _transform), _transform_params = mechanisms[do_parent_name], params[2][do_parent_name]
-        do_image = _transform(_transform_params, image, parents, do_parent, do_noise)
-        do_parents = {**parents, do_parent_name: do_parent}
-        return do_image, do_parents
-
-    def abduct(params: Params, do_parent_name: str, image: Array, parents: Dict[str, Array]) -> Array:
-        (_, _abduct), _abduct_params = abductions[do_parent_name], params[3][do_parent_name]
-        return _abduct(_abduct_params, image, parents)
-
-    def assert_dist(params: Params, target_dist: FrozenSet[str], inputs: Any, image: Array, parents: Dict[str, Array]) \
-            -> Tuple[Array, Any]:
-        loss, output = jnp.zeros(()), {}
-        # Assert the parents are correct
-        for parent_name, parent in parents.items():
-            cross_entropy, output[parent_name] = classify(stop_gradient(params), parent_name, image, parent)
-            loss += cross_entropy
-        # Assert the images come from the target distribution
-        (_, _calc_divergence), _divergence_params = divergences[target_dist], params[1][target_dist]
-        image_target_dist, parents_target_dist = inputs[target_dist]
-        _divergence, disc_loss, gen_loss = _calc_divergence(_divergence_params, image_target_dist, parents_target_dist, image, parents)
-        loss += gen_loss - disc_loss
-        return loss, {**output, 'divergence': _divergence}
-
     def intervene(params: Params, source_dist: FrozenSet[str], target_dist: FrozenSet[str], do_parent_name: str,
                   inputs: Any, image: Array, parents: Dict[str, Array], rng: PRNGKey) \
             -> Tuple[Array, Array, Array, Any]:
 
+        (_, abduct), _abduct_params = abductions[do_parent_name], params[0][do_parent_name]
+        (_, transform), _transform_params = mechanisms[do_parent_name], params[1][do_parent_name]
+        (_, calc_divergence), _divergence_params = divergences[target_dist], params[2][target_dist]
+
         do_parent, order = sample_parent_from_marginals(rng, do_parent_name, batch_size=image.shape[0])
-        do_noise = jax.random.uniform(rng, shape=(image.shape[0], noise_dim)) * 0
-        do_image, do_parents = transform(params, do_parent_name, image, parents, do_parent, do_noise)
-        loss, _output = assert_dist(params, target_dist, inputs, do_image, do_parents)
-        output = {'image': image[order], 'do_image': do_image[order], 'forward': _output}
+        do_noise = jax.random.uniform(rng, shape=(image.shape[0], noise_dim))
+        do_image = transform(_transform_params, image, parents, do_parent, do_noise)
+        do_parents = {**parents, do_parent_name: do_parent}
+
+        image_target_dist, parents_target_dist = inputs[target_dist]
+        loss, _divergence,gen_loss = calc_divergence(_divergence_params, image_target_dist, parents_target_dist, do_image,
+                                            do_parents)
+        output = {'image': image[order], 'do_image': do_image[order], 'divergence': _divergence, 'loss': loss, 'gen_loss':gen_loss}
 
         # if cycle:
-        #     noise = abduct(params, do_parent_name, image, parents)
-        #     image_cycle, _ = transform(params, do_parent_name, do_image, do_parents, do_parent, noise)
-        #     loss_cycle, _output = assert_dist(params, source_dist, inputs, image_cycle, parents)
+        #     noise = abduct(_abduct_params, image, parents)
+        #     image_cycle, _ = transform(_transform_params, do_image, do_parents, do_parent, noise)
+        #     image_target_dist, parents_target_dist = inputs[source_dist]
+        #     loss_cycle, _divergence = calc_divergence(divergence_params, image_target_dist, parents_target_dist,
+        #                                               image_cycle, parents)
         #     # noise_cycle = abduct(params, stop_gradient(image_cycle), stop_gradient(parents))
-        #     do_noise_cycle = abduct(params, do_parent_name, stop_gradient(do_image), do_parents)
+        #     do_noise_cycle = abduct(_abduct_params, stop_gradient(do_image), do_parents)
         #     l2_image = l2(image, image_cycle)
         #     # l2_noise = l2(noise, noise_cycle)
         #     l2_do_noise = l2(do_noise, do_noise_cycle)
         #
         #     loss += loss_cycle + l2_do_noise
         #     output.update(
-        #         {'image_cycle': image_cycle[order], 'cycle': _output, 'l2_image': l2_image, 'l2_do_noise': l2_do_noise})
+        #         {'image_cycle': image_cycle[order], 'divergence_cycle': _divergence, 'l2_image': l2_image,
+        #          'l2_do_noise': l2_do_noise})
 
         return do_image, do_parents, loss, output
 
     def apply_fn(params: Params, inputs: Any, rng: Array) -> Tuple[Array, Any]:
         loss, output = jnp.zeros(()), {}
 
-        # Train the classifiers on unconfounded data
-        for parent_name in parent_names:
-            image, parents = inputs[frozenset((parent_name,))]
-            cross_entropy, output[parent_name] = classify(params, parent_name, image, parents[parent_name])
-            loss += cross_entropy
-
-        # Transform the confounded data into to the target (unconfounded) distributions
         for intervention in interventions:
             source_dist: FrozenSet[str] = frozenset()  # empty set represents joint distribution
             (image, parents) = inputs[source_dist]
@@ -175,12 +147,17 @@ def build_model(parent_dims: Dict[str, int], marginals: Dict[str, Array], input_
         return loss, output
 
     def init_optimizer_fn(params: Params) -> Tuple[OptimizerState, UpdateFn]:
-        # opt_init, opt_update, get_params = optimizers.momentum(step_size=lambda x: 0.0001, mass=0.5)
-        opt_init, opt_update, get_params = optimizers.adam(step_size=lambda x: 0.0002, b1=0.5)
+        #opt_init, opt_update, get_params = optimizers.momentum(step_size=lambda x: 0.001, mass=0.5)
+        #opt_init, opt_update, get_params = optimizers.adam(step_size=lambda x: 0.00002, b1=0.5)
+        opt_init, opt_update, get_params = optimizers.adam(step_size=lambda x: 0.000001)
+
 
         @jax.jit
         def update(i: int, opt_state: OptimizerState, inputs: Any, rng: Array) -> Tuple[OptimizerState, Array, Any]:
             (loss, outputs), grads = jax.value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
+
+            # grads = (grads[0], grads[1], jax.tree_map(lambda x: x * .1, grads[2]))
+
             opt_state = opt_update(i, grads, opt_state)
 
             return opt_state, loss, outputs
