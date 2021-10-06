@@ -6,6 +6,6 @@ from jax.experimental.optimizers import Params
 Array = Union[jnp.ndarray, Any]
 Shape = Tuple[int, ...]
 PRNGKey = jnp.ndarray
-InitFn = Callable[[Array, Shape], Tuple[Shape, Params]]
+InitFn = Callable[[PRNGKey, Shape], Tuple[Shape, Params]]
 ApplyFn = Callable
 StaxLayer = Tuple[InitFn, ApplyFn]

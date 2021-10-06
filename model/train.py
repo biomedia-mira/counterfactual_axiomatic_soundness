@@ -6,83 +6,86 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
-from jax.experimental.optimizers import OptimizerState, Params
+from jax.experimental.optimizers import OptimizerState, Params, ParamsFn
+from tqdm import tqdm
 
-from components.typing import Array, Shape
+from components.typing import Array, PRNGKey, Shape
 from datasets.confounded_mnist import image_gallery
 
-InitModelFn = Callable[[Array, Shape], Params]
+InitModelFn = Callable[[PRNGKey, Shape], Params]
 ApplyModelFn = Callable
-UpdateFn = Callable[[int, OptimizerState, Any, jnp.ndarray], Tuple[OptimizerState, jnp.ndarray, Any]]
-InitOptimizerFn = Callable[[Params], Tuple[OptimizerState, UpdateFn]]
-AccumulateOutputFn = Callable[[Any, Optional[Any]], Any]
-LogOutputFn = Callable[[Any], None]
-Model = Tuple[InitModelFn, ApplyModelFn, InitOptimizerFn, AccumulateOutputFn, LogOutputFn]
+UpdateFn = Callable[[int, OptimizerState, Any, PRNGKey], Tuple[OptimizerState, jnp.ndarray, Any]]
+InitOptimizerFn = Callable[[Params], Tuple[OptimizerState, UpdateFn, ParamsFn]]
+Model = Tuple[InitModelFn, ApplyModelFn, InitOptimizerFn]
 
 
-def log_eval(evaluation: Dict, step: int, writer: tf.summary.SummaryWriter, tag: Optional[str] = None) -> None:
-    for new_tag, value in evaluation.items():
-        new_tag = tag + '/' + new_tag if tag else new_tag
-        log_eval(value, step, writer, new_tag) if isinstance(value, Dict) else log_value(value, new_tag, step, writer)
-
-
-def log_value(value: Any, tag: str, step: int, writer: tf.summary.SummaryWriter,
-              logging_fn: Callable[[str], None] = print) -> None:
-    with writer.as_default():
-        tf.summary.scalar(tag, value, step) if value.size == 1 else tf.summary.image(tag, np.expand_dims(image_gallery(value), 0), step)
-    logging_fn(f'epoch: {step:d}: \t{tag}: {value:.2f}') if value.size == 1 else None
-
-
-def get_summary_writer(job_dir: Path, name: str) -> tf.summary.SummaryWriter:
+def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str], None]] = None) \
+        -> Callable[[Dict, int, Optional[str]], None]:
     logdir = (job_dir / 'logs' / name)
     logdir.mkdir(exist_ok=True, parents=True)
-    return tf.summary.create_file_writer(str(logdir))
+    writer = tf.summary.create_file_writer(str(logdir))
+
+    def log_value(value: Any, tag: str, step: int) -> None:
+        value = jnp.mean(value) if value.ndim <= 1 else value
+        tf.summary.scalar(tag, value, step) if value.size == 1 else \
+            tf.summary.image(tag, np.expand_dims(image_gallery(value * 255.), 0), step)
+        if logging_fn is not None:
+            logging_fn(f'epoch: {step:d}: \t{tag}: {value:.2f}') if value.size == 1 else None
+
+    def log_eval(evaluation: Dict, step: int, tag: Optional[str] = None) -> None:
+        with writer.as_default():
+            for new_tag, value in evaluation.items():
+                new_tag = tag + '/' + new_tag if tag else new_tag
+                log_eval(value, step, new_tag) if isinstance(value, Dict) else log_value(value, new_tag, step)
+
+    return log_eval
+
+
+def accumulate_output(new_output: Any, cum_output: Optional[Any]) -> Any:
+    def update_value(value: Array, new_value: Array) -> Array:
+        return value + new_value if value.size == 1 \
+            else (jnp.concatenate((value, new_value)) if value.ndim == 1 else new_value)
+
+    to_cpu = jax.partial(jax.device_put, device=jax.devices('cpu')[0])
+    new_output = jax.tree_map(to_cpu, new_output)
+    return new_output if cum_output is None else jax.tree_multimap(update_value, cum_output, new_output)
 
 
 def train(model: Model,
           input_shape: Shape,
           job_dir: Path,
-          num_epochs: int,
           train_data: Iterable,
           test_data: Optional[Iterable],
+          num_steps: int,
+          log_every: int,
           eval_every: int,
-          save_every: int) -> None:
-    init_fun, apply_fun, init_optimizer_fun, accumulate_output, log_output = model
-    train_writer = get_summary_writer(job_dir, 'train')
-    test_writer = get_summary_writer(job_dir, 'test')
+          save_every: int) -> Params:
+    init_fn, apply_fn, init_optimizer_fn = model
+    train_writer = get_writer_fn(job_dir, 'train')
+    test_writer = get_writer_fn(job_dir, 'test')
 
     rng = jax.random.PRNGKey(0)
-    params = init_fun(rng, input_shape)
-    opt_state, update = init_optimizer_fun(params)
+    params = init_fn(rng, input_shape)
+    opt_state, update, get_params = init_optimizer_fn(params)
 
-    itercount = itertools.count()
-    for epoch in range(num_epochs):
-        cum_output = None
-        for i, inputs in enumerate(train_data):
-            opt_state, loss, output = update(next(itercount), opt_state, inputs, rng)
-            rng, _ = jax.random.split(rng)
-            cum_output = accumulate_output(output, cum_output)
-            if jnp.isnan(loss):
-                raise ValueError('NaN loss')
-        log_eval(log_output(cum_output), epoch, train_writer)
+    for step, inputs in tqdm(enumerate(itertools.cycle(train_data)), total=num_steps):
+        if step >= num_steps:
+            break
+        rng, _ = jax.random.split(rng)
+        opt_state, loss, output = update(step, opt_state, inputs, rng)
+        if step % log_every == 0:
+            train_writer(output, step)
+        if jnp.isnan(loss):
+            raise ValueError('NaN loss')
 
-        if epoch % eval_every == 0 and test_data is not None:
+        if step % eval_every == 0 and test_data is not None:
             cum_output = None
-            for inputs in test_data:
-                _, output = jax.jit(apply_fun)(params, inputs)
+            for test_inputs in test_data:
+                rng, _ = jax.random.split(rng)
+                _, output = apply_fn(get_params(opt_state), test_inputs, rng)
                 cum_output = accumulate_output(output, cum_output)
-            log_eval(log_output(cum_output), epoch, test_writer)
+            test_writer(cum_output, step)
 
-        if epoch % save_every == 0:
+        if step % save_every == 0:
             jnp.save(str(job_dir / 'model.np'), params)
-
-    # for epoch in range(num_epochs):
-    #     for i, inputs in enumerate(train_data):
-    #         j=next(itercount)
-    #         opt_state, loss, output = update(j, opt_state, inputs, rng)
-    #         rng, _ = jax.random.split(rng)
-    #         log_eval(log_output(output), j, train_writer)
-    #         if jnp.isnan(loss):
-    #             raise ValueError('NaN loss')
-
-
+    return params

@@ -1,10 +1,40 @@
+import math
+from typing import Any
 from typing import Tuple, Union
 
 import jax
 import jax.experimental.stax as stax
 import jax.numpy as jnp
 from jax.experimental.stax import Conv, Relu
+from jax.lax import stop_gradient
 from jax.nn import normalize
+
+from components.typing import Array, StaxLayer, PRNGKey, Params, Shape
+
+
+def residual_connection(init_fn, apply_fn):
+    def _apply_fn(params, inputs, **kwargs):
+        return apply_fn(params, inputs, **kwargs) + inputs
+
+    return init_fn, _apply_fn
+
+
+def concat_positional_encodings() -> StaxLayer:
+    def init_fun(rng: PRNGKey, input_shape: Shape) -> Tuple[Shape, Params]:
+        batch_size, x, y, channels = input_shape
+        emb_dim = int(math.ceil(channels / 4) * 2)
+        inv_freq = 1. / (10000 ** (jnp.arange(0, emb_dim, 2) / emb_dim))
+        pos = jnp.moveaxis(jnp.mgrid[:x, :y], 0, -1)
+        inp = jnp.einsum('...i,j->...ij', pos, inv_freq)
+        encodings = stop_gradient(
+            jnp.reshape(jnp.concatenate((jnp.sin(inp), jnp.cos(inp)), axis=-1), (x, y, emb_dim * 2)))
+        return (*input_shape[:-1], input_shape[-1] + emb_dim * 2), encodings
+
+    def apply_fun(params: Params, inputs: Array, **kwargs: Any):
+        encodings = params
+        return jnp.concatenate(((jnp.broadcast_to(encodings, (inputs.shape[0], *encodings.shape))), inputs), axis=-1)
+
+    return init_fun, apply_fun
 
 
 # differentiable rounding operation
@@ -30,12 +60,29 @@ def layer_norm(axis: Union[int, Tuple[int, ...]]):
 
 def reshape(output_shape):
     def init_fun(rng, input_shape):
-        return (-1, *output_shape), ()
+        return output_shape, ()
 
     def apply_fun(params, inputs, **kwargs):
-        return jnp.reshape(inputs, (-1, *output_shape))
+        return jnp.reshape(inputs, output_shape)
 
     return init_fun, apply_fun
+
+
+Reshape = reshape
+
+
+def rezero():
+    def init_fun(rng, input_shape):
+        scale = jnp.zeros([]) + .001
+        return input_shape, scale
+
+    def apply_fun(params, inputs, **kwargs):
+        return inputs * params
+
+    return init_fun, apply_fun
+
+
+ReZero = rezero
 
 
 def conv_residual_block(in_channels: int, out_channels: int, filter_shape: Tuple[int, int] = (3, 3)):
