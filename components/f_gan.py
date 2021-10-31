@@ -1,17 +1,30 @@
 # https://arxiv.org/abs/1606.00709
 from typing import Callable, Iterable, Tuple
 
+import jax
 import jax.numpy as jnp
 from jax.experimental import stax
 from jax.experimental.stax import Dense, Flatten
 from jax.lax import stop_gradient
-
+import functools
+from jax.tree_util import tree_reduce, tree_map
 from components.typing import Array, Params, StaxLayer
+from functools import partial
+from jax.experimental.maps import xmap
 
-FDivType = Tuple[Callable[[Array], Array], Callable[[Array], Array]]
+
+def compose2(f: Callable, g: Callable) -> Callable:
+    return lambda *a, **kw: f(g(*a, **kw))
 
 
-def gan() -> FDivType:
+def compose(*fs: Callable) -> Callable:
+    return functools.reduce(compose2, fs)
+
+
+FDivergence = Tuple[Callable[[Array], Array], Callable[[Array], Array]]
+
+
+def gan() -> FDivergence:
     def activation(v: Array) -> Array:
         return -jnp.log(1 + jnp.exp(-v))
 
@@ -21,7 +34,7 @@ def gan() -> FDivType:
     return activation, f_conj
 
 
-def kl() -> FDivType:
+def kl() -> FDivergence:
     def activation(v: Array) -> Array:
         return v
 
@@ -31,7 +44,7 @@ def kl() -> FDivType:
     return activation, f_conj
 
 
-def reverse_kl() -> FDivType:
+def reverse_kl() -> FDivergence:
     def activation(v: Array) -> Array:
         return -jnp.exp(-v)
 
@@ -41,7 +54,7 @@ def reverse_kl() -> FDivType:
     return activation, f_conj
 
 
-def squared_hellinger() -> FDivType:
+def squared_hellinger() -> FDivergence:
     def activation(v: Array) -> Array:
         return 1 - jnp.exp(-v)
 
@@ -51,7 +64,7 @@ def squared_hellinger() -> FDivType:
     return activation, f_conj
 
 
-def pearson() -> FDivType:
+def pearson() -> FDivergence:
     def activation(v: Array) -> Array:
         return v
 
@@ -61,7 +74,7 @@ def pearson() -> FDivType:
     return activation, f_conj
 
 
-def jensen_shannon() -> FDivType:
+def jensen_shannon() -> FDivergence:
     def activation(v: Array) -> Array:
         return jnp.log(2.) - jnp.log(1 + jnp.exp(-v))
 
@@ -71,7 +84,17 @@ def jensen_shannon() -> FDivType:
     return activation, f_conj
 
 
-def get_activation_and_f_conj(mode: str) -> FDivType:
+def wasserstein() -> FDivergence:
+    def activation(v: Array) -> Array:
+        return v
+
+    def f_conj(t: Array) -> Array:
+        return t
+
+    return activation, f_conj
+
+
+def get_activation_and_f_conj(mode: str) -> FDivergence:
     if mode == 'gan':
         return gan()
     elif mode == 'kl':
@@ -84,13 +107,23 @@ def get_activation_and_f_conj(mode: str) -> FDivType:
         return pearson()
     elif mode == 'jensen_shannon':
         return jensen_shannon()
+    elif mode == 'wasserstein':
+        return wasserstein()
     else:
         raise ValueError(f'Unsupported divergence: {mode}.')
 
 
-def f_gan(layers: Iterable[StaxLayer], mode: str = 'gan', trick_g: bool = False) -> StaxLayer:
+def f_gan(layers: Iterable[StaxLayer], mode: str = 'gan', trick_g: bool = False, disc_penalty: float = 0.) -> StaxLayer:
     activation, f_conj = get_activation_and_f_conj(mode)
-    init_fun, net_apply_fun = stax.serial(*layers, Flatten, Dense(1))
+    init_fun, net_apply_fun = stax.serial(*layers)
+
+    def grad_penalty(params: Params, q_sample: Array) -> Array:
+        grads_ = jax.jacrev(net_apply_fun)(params, q_sample)
+
+        def tree_norm(grads):
+            return tree_reduce(lambda x, y: x + y, tree_map(compose(jnp.sqrt, jnp.sum, jnp.square), grads))
+
+        return jnp.mean(jnp.square(jax.vmap(tree_norm)(grads_) - 1))
 
     def calc_divergence(params: Params, p_sample: Array, q_sample: Array) -> Array:
         t_p_dist = net_apply_fun(params, p_sample)
@@ -104,6 +137,9 @@ def f_gan(layers: Iterable[StaxLayer], mode: str = 'gan', trick_g: bool = False)
             gen_loss = calc_divergence(stop_gradient(params), p_sample, q_sample)
         else:
             gen_loss = -jnp.mean(activation(net_apply_fun(stop_gradient(params), q_sample)))
-        return divergence, disc_loss, gen_loss
+        loss = gen_loss - disc_loss
+        if disc_penalty != 0:
+            loss = loss + disc_penalty * grad_penalty(params, stop_gradient(q_sample))
+        return loss, disc_loss, gen_loss
 
     return init_fun, apply_fun

@@ -28,7 +28,7 @@ def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str],
     def log_value(value: Any, tag: str, step: int) -> None:
         value = jnp.mean(value) if value.ndim <= 1 else value
         tf.summary.scalar(tag, value, step) if value.size == 1 else \
-            tf.summary.image(tag, np.expand_dims(image_gallery(value * 255.), 0), step)
+            tf.summary.image(tag, np.expand_dims(image_gallery((value * 127.5) + 127.5, num_images_to_display=min(128, value.shape[0])), 0), step)
         if logging_fn is not None:
             logging_fn(f'epoch: {step:d}: \t{tag}: {value:.2f}') if value.size == 1 else None
 
@@ -43,7 +43,7 @@ def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str],
 
 def accumulate_output(new_output: Any, cum_output: Optional[Any]) -> Any:
     def update_value(value: Array, new_value: Array) -> Array:
-        return value + new_value if value.size == 1 \
+        return value + new_value if value.ndim == 0 \
             else (jnp.concatenate((value, new_value)) if value.ndim == 1 else new_value)
 
     to_cpu = jax.partial(jax.device_put, device=jax.devices('cpu')[0])
@@ -64,7 +64,7 @@ def train(model: Model,
     train_writer = get_writer_fn(job_dir, 'train')
     test_writer = get_writer_fn(job_dir, 'test')
 
-    rng = jax.random.PRNGKey(0)
+    rng = jax.random.PRNGKey(1234)
     params = init_fn(rng, input_shape)
     opt_state, update, get_params = init_optimizer_fn(params)
 
@@ -87,5 +87,5 @@ def train(model: Model,
             test_writer(cum_output, step)
 
         if step % save_every == 0:
-            jnp.save(str(job_dir / 'model.np'), params)
-    return params
+            jnp.save(str(job_dir / f'model.npy'), get_params(opt_state))
+    return get_params(opt_state)
