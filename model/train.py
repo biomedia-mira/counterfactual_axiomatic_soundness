@@ -62,6 +62,7 @@ def train(model: Model,
           log_every: int,
           eval_every: int,
           save_every: int) -> Params:
+    job_dir.mkdir(exist_ok=True, parents=True)
     init_fn, apply_fn, init_optimizer_fn = model
     train_writer = get_writer_fn(job_dir, 'train')
     test_writer = get_writer_fn(job_dir, 'test')
@@ -84,7 +85,7 @@ def train(model: Model,
             cum_output = None
             for test_inputs in test_data:
                 rng, _ = jax.random.split(rng)
-                _, output = apply_fn(get_params(opt_state), test_inputs, rng)
+                _, output = apply_fn(get_params(opt_state), test_inputs, rng=rng)
                 cum_output = accumulate_output(output, cum_output)
             test_writer(cum_output, step)
 

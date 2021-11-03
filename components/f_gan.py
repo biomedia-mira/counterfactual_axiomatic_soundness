@@ -1,8 +1,7 @@
 # https://arxiv.org/abs/1606.00709
-from typing import Callable, Iterable, Tuple
+from typing import Any, Callable, Tuple
 
 import jax.numpy as jnp
-from jax.experimental import stax
 from jax.lax import stop_gradient
 
 from components.stax_extension import Array, Params, StaxLayer
@@ -99,16 +98,16 @@ def get_activation_and_f_conj(mode: str) -> FDivergence:
         raise ValueError(f'Unsupported divergence: {mode}.')
 
 
-def f_gan(layers: Iterable[StaxLayer], mode: str = 'gan', trick_g: bool = False) -> StaxLayer:
+def f_gan(critic: StaxLayer, mode: str = 'gan', trick_g: bool = False) -> StaxLayer:
+    critic_init_fn, critic_apply_fn = critic
     activation, f_conj = get_activation_and_f_conj(mode)
-    critic_init_fn, critic_apply_fn = stax.serial(*layers)
 
     def calc_divergence(params: Params, p_sample: Array, q_sample: Array) -> Array:
         t_p_dist = critic_apply_fn(params, p_sample)
         t_q_dist = critic_apply_fn(params, q_sample)
         return jnp.mean(activation(t_p_dist)) - jnp.mean(f_conj(activation(t_q_dist)))
 
-    def apply_fn(params: Params, p_sample: Array, q_sample: Array) -> Tuple[Array, Array, Array]:
+    def apply_fn(params: Params, p_sample: Array, q_sample: Array, **kwargs: Any) -> Tuple[Array, Array, Array]:
         divergence = calc_divergence(params, p_sample, stop_gradient(q_sample))
         critic_loss = -divergence
         if not trick_g:

@@ -1,5 +1,5 @@
 import itertools
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, FrozenSet, Tuple
 
 import numpy as np
 import tensorflow as tf
@@ -46,7 +46,7 @@ def get_resample_fn(num_repeats: tf.Tensor, parent_dims: Dict[str, int]) \
 
 
 def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, np.ndarray], parent_dims: Dict[str, int]) \
-        -> Tuple[Dict[str, tf.data.Dataset], Dict[str, np.ndarray]]:
+        -> Tuple[Dict[FrozenSet, tf.data.Dataset], Dict[str, np.ndarray]]:
     indicator = {key: [parents[key] == i for i in range(dim)] for key, dim in parent_dims.items()}
     index_map = np.array([np.logical_and.reduce(a) for a in itertools.product(*indicator.values())])
     index_map = index_map.reshape((*parent_dims.values(), -1))

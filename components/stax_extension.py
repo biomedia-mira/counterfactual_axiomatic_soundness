@@ -21,7 +21,6 @@ StaxLayerConstructor = Callable[..., StaxLayer]
 def classifier(num_classes: int, layers: Iterable[StaxLayer]) -> StaxLayer:
     return cast(StaxLayer, stax.serial(*layers, Flatten, Dense(num_classes), LogSoftmax))
 
-
 def calc_accuracy(pred: Array, target: Array) -> Array:
     return cast(Array, jnp.equal(jnp.argmax(pred, axis=-1), jnp.argmax(target, axis=-1)))
 
@@ -38,15 +37,6 @@ def stax_wrapper(fn: Callable[[Array], Array]) -> StaxLayer:
         return fn(inputs)
 
     return init_fn, apply_fn
-
-
-def residual(layer: StaxLayer) -> StaxLayer:
-    _init_fn, _apply_fn = layer
-
-    def apply_fn(params: Params, inputs: Array, **kwargs: Any):
-        return inputs + _apply_fn(params, inputs, **kwargs)
-
-    return _init_fn, apply_fn
 
 
 def layer_norm(axis: Union[int, Tuple[int, ...]], bias_init=zeros, scale_init=ones) -> StaxLayer:
@@ -78,3 +68,4 @@ def reshape(output_shape: Shape) -> StaxLayer:
 Reshape = reshape
 LayerNorm2D = layer_norm(axis=(1, 2, 3))
 LayerNorm1D = layer_norm(axis=(1,))
+PixelNorm2D = layer_norm(axis=(3,))

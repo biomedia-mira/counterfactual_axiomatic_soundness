@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Tuple, FrozenSet
 from typing import List
 
 import numpy as np
@@ -183,7 +183,7 @@ def get_dataset(dataset_dir: Path, dataset: tf.data.Dataset, mechanisms: List[Me
 
 
 def create_confounded_mnist_dataset() -> Tuple[
-    Dict[str, tf.data.Dataset], tf.data.Dataset, Dict[str, int], Dict[str, np.ndarray], Shape]:
+    Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, int], Dict[str, np.ndarray], Shape]:
     input_shape = (-1, 28, 28, 3)
     ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False, as_supervised=True)
     train_mechanisms, test_mechanisms, parent_dims = get_apply_mechanisms_fn()
@@ -204,3 +204,4 @@ def create_confounded_mnist_dataset() -> Tuple[
     #             plt.show()
     #         break
     return train_data, test_data, parent_dims, marginals, input_shape
+
