@@ -11,22 +11,20 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 from jax import jit
 from jax.experimental import optimizers
-from jax.experimental.optimizers import OptimizerState
+from jax.experimental.optimizers import OptimizerState, l2_norm
 
 from components.f_gan import f_gan
 from components.typing import Array, Params, PRNGKey, Shape
 from model.train import Model, train
 from style_gan import style_gan
-from spectral_norm import estimate_spectral_norm
 
 
 def gan(resolution: int, num_image_channels: int, z_dim: int = 64, c_dim=0) -> Model:
     generator, discriminator = style_gan(resolution=resolution, num_image_channels=num_image_channels, z_dim=z_dim,
                                          c_dim=c_dim, fmap_max=128, fmap_min=1, layer_features=128, num_layers=2,
                                          use_noise=True)
-    divergence_init_fn, divergence_apply_fn = f_gan(mode='gan', layers=[discriminator], trick_g=True,
+    divergence_init_fn, divergence_apply_fn = f_gan(mode='wasserstein', layers=[discriminator], trick_g=True,
                                                     disc_penalty=0.)
-    # divergence_init_fn, divergence_apply_fn = discriminator
     generator_init_fn, generator_apply_fn = generator
 
     def init_fn(rng: PRNGKey, input_shape: Shape) -> Params:
@@ -42,11 +40,6 @@ def gan(resolution: int, num_image_channels: int, z_dim: int = 64, c_dim=0) -> M
         noise = random.normal(k1, shape=(len(real_image), z_dim))
         fake_image = generator_apply_fn(generator_params, noise, k2)
 
-        # gen_loss = jnp.mean(jax.nn.softplus(-divergence_apply_fn(jax.lax.stop_gradient(discriminator_params), fake_image)))
-        # loss_fake = jax.nn.softplus(divergence_apply_fn(discriminator_params, jax.lax.stop_gradient(fake_image)))
-        # loss_real = jax.nn.softplus(-divergence_apply_fn(discriminator_params, real_image))
-        # disc_loss = jnp.mean(loss_fake + loss_real)
-        # loss = disc_loss + gen_loss
         loss, disc_loss, gen_loss = divergence_apply_fn(discriminator_params, real_image, fake_image)
         return loss, {'loss': loss[jnp.newaxis],
                       'gen_loss': gen_loss[jnp.newaxis],
@@ -54,9 +47,9 @@ def gan(resolution: int, num_image_channels: int, z_dim: int = 64, c_dim=0) -> M
                       'real_image': real_image, 'fake_image': fake_image}
 
     def init_optimizer_fn(params: Params):
-        ##
-        # opt_init_d, opt_update_d, get_params_d = optimizers.adam(step_size=lambda x: 0.001, b1=0.0, b2=0.99)
-        # opt_init_g, opt_update_g, get_params_g = optimizers.adam(step_size=lambda x: 0.001, b1=0.99, b2=0.99)
+        #
+        # opt_init_d, opt_update_d, get_params_d = optimizers.adam(step_size=lambda x: 0.001, b1=0.0, b2=0.9)
+        # opt_init_g, opt_update_g, get_params_g = optimizers.adam(step_size=lambda x: 0.001, b1=0.0, b2=0.9)
         #
         # def get_params(opt_state):
         #     return (get_params_d(opt_state[0]), get_params_g(opt_state[1]))
@@ -65,21 +58,21 @@ def gan(resolution: int, num_image_channels: int, z_dim: int = 64, c_dim=0) -> M
         # def update(i: int, opt_state: Tuple[OptimizerState, OptimizerState], inputs: Any, rng: PRNGKey) -> Tuple[OptimizerState, Array, Any]:
         #     opt_state_d, opt_state_g = opt_state
         #
+        #     (loss, outputs), grads = jax.value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
+        #     opt_state_g = opt_update_g(i, grads[1], opt_state_g)
+        #     opt_state = (opt_state_d, opt_state_g)
         #     for _ in range(1):
         #         (loss, outputs), grads = jax.value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
         #         opt_state_d = opt_update_d(i, grads[0], opt_state_d)
         #         opt_state = (opt_state_d, opt_state_g)
         #
-        #     (loss, outputs), grads = jax.value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
-        #     opt_state_g = opt_update_g(i, grads[1], opt_state_g)
-        #     opt_state = (opt_state[0], opt_state_g)
         #     return opt_state, loss, outputs
         #
         # init_opt_state = (opt_init_d(params[0]), opt_init_g(params[1]))
         #
         # return init_opt_state, update, get_params
 
-        ##
+        #
         opt_init, opt_update, get_params = optimizers.adam(step_size=lambda x: 0.002, b1=0.0, b2=0.9)
 
         @jit

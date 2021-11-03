@@ -246,3 +246,59 @@ def modulated_conv2d_layer(x, w, s, fmaps, kernel, up=False, demodulate=True, re
 
     return x
 
+
+
+# ###
+# from typing import Sequence, Union, Optional, Tuple
+# from jax.lax import ConvGeneralDilatedDimensionNumbers, conv_dimension_numbers, _conv
+# import numpy as np
+# def _flip_axes(x, axes):
+#   """Flip ndarray 'x' along each axis specified in axes tuple."""
+#   for axis in axes:
+#     x = np.flip(x, axis)
+#   return x
+#
+#
+# def conv_transpose(lhs, rhs, strides: Sequence[int],
+#                    padding: Union[str, Sequence[Tuple[int, int]]],
+#                    rhs_dilation: Optional[Sequence[int]] = None,
+#                    dimension_numbers: ConvGeneralDilatedDimensionNumbers = None,
+#                    transpose_kernel: bool = False,
+#                    precision=  None,
+#                    preferred_element_type = None):
+#
+#   assert len(lhs.shape) == len(rhs.shape) and len(lhs.shape) >= 2
+#   ndims = len(lhs.shape)
+#   one = (1,) * (ndims - 2)
+#   # Set dimensional layout defaults if not specified.
+#   if dimension_numbers is None:
+#     if ndims == 2:
+#       dimension_numbers = ('NC', 'IO', 'NC')
+#     elif ndims == 3:
+#       dimension_numbers = ('NHC', 'HIO', 'NHC')
+#     elif ndims == 4:
+#       dimension_numbers = ('NHWC', 'HWIO', 'NHWC')
+#     elif ndims == 5:
+#       dimension_numbers = ('NHWDC', 'HWDIO', 'NHWDC')
+#     else:
+#       raise ValueError('No 4+ dimensional dimension_number defaults.')
+#   dn = conv_dimension_numbers(lhs.shape, rhs.shape, dimension_numbers)
+#   k_shape = np.take(rhs.shape, dn.rhs_spec)
+#   k_sdims = k_shape[2:]  # type: ignore[index]
+#   # Calculate correct output shape given padding and strides.
+#   pads: Union[str, Sequence[Tuple[int, int]]]
+#   if padding in {'SAME', 'VALID'}:
+#     if rhs_dilation is None:
+#       rhs_dilation = (1,) * (rhs.ndim - 2)
+#     effective_k_size = map(lambda k, r: (k-1) * r + 1, k_sdims, rhs_dilation)
+#     pads = [_conv_transpose_padding(k, s, padding)
+#             for k,s in zip(effective_k_size, strides)]
+#   else:
+#     pads = padding
+#   if transpose_kernel:
+#     # flip spatial dims and swap input / output channel axes
+#     rhs = _flip_axes(rhs, np.array(dn.rhs_spec)[2:])
+#     rhs = np.swapaxes(rhs, dn.rhs_spec[0], dn.rhs_spec[1])
+#   return conv_general_dilated(lhs, rhs, one, pads, strides, rhs_dilation, dn,
+#                               precision=precision,
+#                               preferred_element_type=preferred_element_type)

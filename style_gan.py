@@ -1,38 +1,37 @@
 import functools
-from typing import Any, Callable, Optional, Tuple, Callable
+from functools import partial
+from typing import Any, Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from functools import partial
-from jax.experimental.stax import Conv, Dense, Flatten, serial, elementwise
-from jax.nn.initializers import normal, zeros
+from jax.experimental.stax import Conv, Dense, elementwise, Flatten, serial
+from jax.nn.initializers import normal, zeros, he_normal,he_uniform
 
-from components.stax_layers import stax_wrapper
+from components.stax_extension import stax_wrapper
 from components.typing import Array, Params, PRNGKey, Shape, StaxLayer, StaxLayerConstructor
-from styla_gan_ops import modulated_conv2d_layer, normalize_2nd_moment, minibatch_stddev_layer
+from spectral_norm import estimate_spectral_norm
+from styla_gan_ops import minibatch_stddev_layer, modulated_conv2d_layer, normalize_2nd_moment
 
 mod_conv = partial(modulated_conv2d_layer, fused_modconv=False, resample_kernel=(1, 3, 3, 1))
 
 
 def leaky_relu(x: Array, negative_slope: Array = 1e-2, gain: float = 1.4142135623730951) -> Array:
-    return gain * jax.nn.leaky_relu(x, negative_slope)
+    return 1.0 * jax.nn.leaky_relu(x, negative_slope)
 
 
 LeakyRelu = elementwise(leaky_relu)
+_w_init = he_uniform() #normal(stddev=1.)
+_b_init = zeros
 
 
 def eq_params(w: Params, b: Params, lr_multiplier: float) -> Params:
     return w * lr_multiplier / np.sqrt(np.prod(w.shape[:-1])), b * lr_multiplier
 
 
-from spectral_norm import estimate_spectral_norm
-from jax.experimental.optimizers import adam
-
-
 def calc_spectral_norm(f, params, input_shape):
     w, b = params
-    return jax.lax.stop_gradient(estimate_spectral_norm(lambda x: f(params, x) - b, input_shape))
+    return estimate_spectral_norm(lambda x: f(params, x) - b, input_shape)
 
 
 def spectral_norm_wrapper(layer_constructor: StaxLayerConstructor) -> StaxLayerConstructor:
@@ -68,11 +67,6 @@ def equalize_lr_params(layer_constructor: StaxLayerConstructor) -> StaxLayerCons
     return _layer_constructor
 
 
-stddev = 1.
-DenseEq = equalize_lr_params(partial(Dense, W_init=normal(stddev=stddev), b_init=zeros))
-ConvEq = equalize_lr_params(partial(Conv, W_init=normal(stddev=stddev), b_init=zeros))
-
-
 def mbstddev(num_new_features: int, group_size: Optional[int] = None) -> StaxLayer:
     def init_fn(rng: PRNGKey, input_shape: Shape) -> Tuple[Shape, Params]:
         return (*input_shape[:-1], input_shape[-1] + num_new_features), ()
@@ -90,6 +84,8 @@ def mapping_network(z_dim: int = 512,
                     num_layers: int = 8,
                     lr_multiplier: float = 0.01) -> StaxLayer:
     assert z_dim > 0 or c_dim > 0
+    # DenseEq = equalize_lr_params(partial(Dense, W_init=normal(stddev=stddev), b_init=zeros))
+    DenseEq = equalize_lr_params(partial(Dense, W_init=_w_init, b_init=_b_init))
 
     init_fn_c, apply_fn_c = DenseEq(w_dim, lr_multiplier=lr_multiplier)
     init_fn_m, apply_fn_m = serial(
@@ -118,13 +114,13 @@ def synthesis_layer(latent_dim: int,
                     up: bool = False,
                     use_noise: bool = True,
                     activation: Callable[[Array], Array] = leaky_relu,
-                    w_init: Callable[[PRNGKey, Shape], Array] = normal(stddev=stddev),
+                    w_init: Callable[[PRNGKey, Shape], Array] = _w_init,
                     lr_multiplier: float = 1.) -> StaxLayer:
     def init_fn(rng: PRNGKey, input_shape: Shape) -> Tuple[Shape, Params]:
-        k1, k2, k3 = jax.random.split(rng, num=3)
+        k1, k2, k3, k4 = jax.random.split(rng, num=4)
         fmaps_in = input_shape[-1]
         w_a, b_a = w_init(k1, (latent_dim, fmaps_in)) / lr_multiplier, jnp.ones(input_shape[-1]) / lr_multiplier
-        w_c, b_c = w_init(k3, (kernel_size, kernel_size, fmaps_in, fmaps_out)) / lr_multiplier, jnp.zeros(fmaps_out)
+        w_c, b_c = w_init(k3, (kernel_size, kernel_size, fmaps_in, fmaps_out)) / lr_multiplier, _b_init(k4, (fmaps_out, ))
         noise_gain = jnp.zeros(())
         output_shape = (input_shape[0], input_shape[1] * (2 if up else 1), input_shape[2] * (2 if up else 1), fmaps_out)
         return output_shape, (w_a, b_a, w_c, b_c, noise_gain)
@@ -182,15 +178,18 @@ def synthesis_block(num_layers: int,
     return init_fn, apply_fn
 
 
-ConvEq = spectral_norm_wrapper(equalize_lr_params(partial(Conv, W_init=normal(stddev=stddev), b_init=zeros)))
-DenseEq = spectral_norm_wrapper(equalize_lr_params(partial(Dense, W_init=normal(stddev=stddev), b_init=zeros)))
+# ConvSN = spectral_norm_wrapper(equalize_lr_params(partial(Conv, W_init=_w_init, b_init=_b_init)))
+# DenseSN = spectral_norm_wrapper(equalize_lr_params(partial(Dense, W_init=_w_init, b_init=_b_init)))
+
+ConvSN = equalize_lr_params(partial(Conv, W_init=_w_init, b_init=_b_init))
+DenseSN = equalize_lr_params(partial(Dense, W_init=_w_init, b_init=_b_init))
 
 
 def discriminator_block(fmaps: Tuple[int, int]) -> StaxLayer:
     path_init_fn, path_apply_fn = serial(
-        *(ConvEq(fmaps[0], filter_shape=(3, 3), padding='SAME'), LeakyRelu,
-          ConvEq(fmaps[1], filter_shape=(2, 2), strides=(2, 2))), LeakyRelu)
-    res_init_fn, res_apply_fn = ConvEq(fmaps[1], filter_shape=(2, 2), strides=(2, 2))
+        *(ConvSN(fmaps[0], filter_shape=(3, 3), padding='SAME'), LeakyRelu,
+          ConvSN(fmaps[1], filter_shape=(2, 2), strides=(2, 2))), LeakyRelu)
+    res_init_fn, res_apply_fn = ConvSN(fmaps[1], filter_shape=(2, 2), strides=(2, 2))
 
     def init_fn(rng: PRNGKey, input_shape: Shape) -> Tuple[Shape, Params]:
         k1, k2 = jax.random.split(rng)
@@ -200,7 +199,7 @@ def discriminator_block(fmaps: Tuple[int, int]) -> StaxLayer:
 
     def apply_fn(params: Params, inputs: Array, **kwargs: Any) -> Array:
         path_params, residual_params = params
-        return (path_apply_fn(path_params, inputs, **kwargs) + res_apply_fn(residual_params, inputs)) * jnp.sqrt(.5)
+        return path_apply_fn(path_params, inputs, **kwargs) + res_apply_fn(residual_params, inputs)
 
     return init_fn, apply_fn
 
@@ -222,7 +221,7 @@ def style_gan(resolution: int,
               fmap_max: int = 512,
               fmap_const: Optional[int] = None,
               # Discriminator
-              mbstd_group_size: int = 8,
+              mbstd_group_size: int = None,
               mbstd_num_features: int = 1
               ):
     def nf(stage: int) -> int:
@@ -247,7 +246,6 @@ def style_gan(resolution: int,
     def generator_init_fn(rng: PRNGKey, input_shape: Shape) -> Tuple[Shape, Params]:
         k1, k2, k3 = jax.random.split(rng, num=3)
         _, mapping_params = mapping_init_fn(k1, ())
-        fmap_const=1
         const_input = jax.random.normal(k2, (1, 4, 4, fmap_const if fmap_const is not None else nf(1)))
         output_shape, gen_params = gen_init_fn(k3, const_input.shape)
         return output_shape, (mapping_params, const_input, gen_params)
@@ -266,15 +264,15 @@ def style_gan(resolution: int,
     num_mapping_layers = 0
     disc_c_init_fn, disc_c_apply_fn = \
         serial(
-            *[DenseEq(mapping_fmaps, lr_multiplier=.1), stax_wrapper(normalize_2nd_moment),
-              *[DenseEq(mapping_fmaps, lr_multiplier=.1)] * num_mapping_layers])
+            *[DenseSN(mapping_fmaps), stax_wrapper(normalize_2nd_moment),
+              *[DenseSN(mapping_fmaps)] * num_mapping_layers])
 
     discriminator_blocks = \
-        [ConvEq(nf(resolution_log2 - 1), filter_shape=(1, 1)), LeakyRelu,
+        [ConvSN(nf(resolution_log2 - 1), filter_shape=(1, 1)), LeakyRelu,
          *[discriminator_block((nf(res - 1), nf(res - 2))) for res in range(resolution_log2, 2, -1)],
          mbstddev(mbstd_num_features, mbstd_group_size),
-         ConvEq(nf(1), filter_shape=(1, 1)), LeakyRelu, Flatten, DenseEq(nf(0)), LeakyRelu,
-         DenseEq(1 if c_dim == 0 else mapping_fmaps)]
+         ConvSN(nf(1), filter_shape=(1, 1)), LeakyRelu, Flatten, DenseSN(nf(0)), LeakyRelu,
+         DenseSN(1 if c_dim == 0 else mapping_fmaps)]
 
     disc_init_fn, disc_apply_fn = serial(*discriminator_blocks)
 

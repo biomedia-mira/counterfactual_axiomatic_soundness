@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from jax import jit
 
-from components.typing import Array, Params
+from components.stax_extension import Array, Params
 
 Test = Callable[[Array, Dict[str, Array]], Tuple[Array, Array]]
 Classifier = Callable[[Array], Array]

@@ -1,12 +1,33 @@
-from typing import Any, Callable
-from typing import Tuple, Union
+from typing import Any, Callable, Tuple, Union
+from typing import cast, Iterable
 
 import jax.numpy as jnp
-from jax.experimental.stax import ones, zeros
+import numpy as np
+from jax.experimental import stax
+from jax.experimental.optimizers import Params
+from jax.experimental.stax import Dense, Flatten, LogSoftmax, ones, zeros
 from jax.nn import normalize
-import jax
+from jax.random import KeyArray
 
-from components.typing import Array, Params, PRNGKey, Shape, StaxLayer
+Array = Union[jnp.ndarray, np.ndarray, Any]
+Shape = Tuple[int, ...]
+PRNGKey = KeyArray
+InitFn = Callable[[PRNGKey, Shape], Tuple[Shape, Params]]
+ApplyFn = Callable
+StaxLayer = Tuple[InitFn, ApplyFn]
+StaxLayerConstructor = Callable[..., StaxLayer]
+
+
+def classifier(num_classes: int, layers: Iterable[StaxLayer]) -> StaxLayer:
+    return cast(StaxLayer, stax.serial(*layers, Flatten, Dense(num_classes), LogSoftmax))
+
+
+def calc_accuracy(pred: Array, target: Array) -> Array:
+    return cast(Array, jnp.equal(jnp.argmax(pred, axis=-1), jnp.argmax(target, axis=-1)))
+
+
+def calc_cross_entropy(pred: Array, target: Array, reduce: bool = False) -> Array:
+    return -jnp.mean(jnp.sum(pred * target, axis=-1)) if reduce else -jnp.sum(pred * target, axis=-1)
 
 
 def stax_wrapper(fn: Callable[[Array], Array]) -> StaxLayer:

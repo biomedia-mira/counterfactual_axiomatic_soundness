@@ -43,7 +43,7 @@ LeakyRelu = elementwise(partial(leaky_relu, negative_slope=.2))
 #                     ConvTranspose(3, filter_shape=(4, 4), strides=(1, 1), padding='SAME'), Sigmoid)
 
 ##
-from components.stax_layers import LayerNorm2D, layer_norm
+from components.stax_extension import LayerNorm2D, layer_norm
 
 
 # Norm = BatchNorm(gamma_init=normal_init(0.02))

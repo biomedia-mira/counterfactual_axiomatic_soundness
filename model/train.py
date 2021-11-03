@@ -1,4 +1,5 @@
 import itertools
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Optional, Tuple
 
@@ -9,12 +10,12 @@ import tensorflow as tf
 from jax.experimental.optimizers import OptimizerState, Params, ParamsFn
 from tqdm import tqdm
 
-from components.typing import Array, PRNGKey, Shape
-from datasets.confounded_mnist import image_gallery
+from components.stax_extension import Array, PRNGKey, Shape
+from datasets.utils import image_gallery
 
 InitModelFn = Callable[[PRNGKey, Shape], Params]
 ApplyModelFn = Callable
-UpdateFn = Callable[[int, OptimizerState, Any, PRNGKey], Tuple[OptimizerState, jnp.ndarray, Any]]
+UpdateFn = Callable[[int, OptimizerState, Any, PRNGKey], Tuple[OptimizerState, Array, Any]]
 InitOptimizerFn = Callable[[Params], Tuple[OptimizerState, UpdateFn, ParamsFn]]
 Model = Tuple[InitModelFn, ApplyModelFn, InitOptimizerFn]
 
@@ -28,7 +29,8 @@ def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str],
     def log_value(value: Any, tag: str, step: int) -> None:
         value = jnp.mean(value) if value.ndim <= 1 else value
         tf.summary.scalar(tag, value, step) if value.size == 1 else \
-            tf.summary.image(tag, np.expand_dims(image_gallery((value * 127.5) + 127.5, num_images_to_display=min(128, value.shape[0])), 0), step)
+            tf.summary.image(tag, np.expand_dims(
+                image_gallery((value * 127.5) + 127.5, num_images_to_display=min(128, value.shape[0])), 0), step)
         if logging_fn is not None:
             logging_fn(f'epoch: {step:d}: \t{tag}: {value:.2f}') if value.size == 1 else None
 
@@ -46,7 +48,7 @@ def accumulate_output(new_output: Any, cum_output: Optional[Any]) -> Any:
         return value + new_value if value.ndim == 0 \
             else (jnp.concatenate((value, new_value)) if value.ndim == 1 else new_value)
 
-    to_cpu = jax.partial(jax.device_put, device=jax.devices('cpu')[0])
+    to_cpu = partial(jax.device_put, device=jax.devices('cpu')[0])
     new_output = jax.tree_map(to_cpu, new_output)
     return new_output if cum_output is None else jax.tree_multimap(update_value, cum_output, new_output)
 
@@ -65,7 +67,7 @@ def train(model: Model,
     test_writer = get_writer_fn(job_dir, 'test')
 
     rng = jax.random.PRNGKey(1234)
-    params = init_fn(rng, input_shape)
+    _, params = init_fn(rng, input_shape)
     opt_state, update, get_params = init_optimizer_fn(params)
 
     for step, inputs in tqdm(enumerate(itertools.cycle(train_data)), total=num_steps):
@@ -88,4 +90,6 @@ def train(model: Model,
 
         if step % save_every == 0:
             jnp.save(str(job_dir / f'model.npy'), get_params(opt_state))
+
+    jnp.save(str(job_dir / f'model.npy'), get_params(opt_state))
     return get_params(opt_state)

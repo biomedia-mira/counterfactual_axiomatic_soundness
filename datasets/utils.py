@@ -46,7 +46,7 @@ def get_resample_fn(num_repeats: tf.Tensor, parent_dims: Dict[str, int]) \
 
 
 def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, np.ndarray], parent_dims: Dict[str, int]) \
-        -> Tuple[tf.data.Dataset, Dict[str, np.ndarray]]:
+        -> Tuple[Dict[str, tf.data.Dataset], Dict[str, np.ndarray]]:
     indicator = {key: [parents[key] == i for i in range(dim)] for key, dim in parent_dims.items()}
     index_map = np.array([np.logical_and.reduce(a) for a in itertools.product(*indicator.values())])
     index_map = index_map.reshape((*parent_dims.values(), -1))
@@ -73,4 +73,4 @@ def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, np.ndarra
         if len(parent_set) == 1:
             marginals[parent_set[0]] = np.squeeze(marginal_dist)
 
-    return tf.data.Dataset.zip(datasets), marginals
+    return datasets, marginals

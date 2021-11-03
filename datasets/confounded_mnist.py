@@ -2,19 +2,17 @@ from pathlib import Path
 from typing import Callable, Dict, Tuple
 from typing import List
 
-import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
-from more_itertools import powerset
 from skimage import draw, morphology, transform
 from tqdm import tqdm
 
-from components.typing import Shape
+from components.stax_extension import Shape
 from datasets.morphomnist import skeleton
 from datasets.morphomnist.morpho import ImageMorphology
 from datasets.utils import get_diagonal_confusion_matrix, get_uniform_confusion_matrix
-from datasets.utils import get_marginal_datasets, image_gallery
+from datasets.utils import get_marginal_datasets
 
 tf.config.experimental.set_visible_devices([], 'GPU')
 
@@ -175,7 +173,8 @@ def get_dataset(dataset_dir: Path, dataset: tf.data.Dataset, mechanisms: List[Me
     dataset = tf.data.Dataset.from_tensor_slices((images, parents))
 
     def encode(_image: tf.Tensor, _parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
-        _image = tf.cast(_image, tf.float32) / tf.constant(255.)
+        # _image = (tf.image.resize(tf.cast(_image, tf.float32), (32, 32)) - tf.constant(127.5)) / tf.constant(127.5)
+        _image = (tf.cast(_image, tf.float32) - tf.constant(127.5)) / tf.constant(127.5)
         _parents = {parent: tf.one_hot(value, parent_dims[parent]) for parent, value in _parents.items()}
         return _image, _parents
 
@@ -183,14 +182,8 @@ def get_dataset(dataset_dir: Path, dataset: tf.data.Dataset, mechanisms: List[Me
     return dataset, parents
 
 
-def setup_dataset_for_training(dataset: tf.data.Dataset, batch_size: int) -> tf.data.Dataset:
-    dataset = dataset.batch(batch_size, drop_remainder=True)
-    dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
-    return tfds.as_numpy(dataset)
-
-
-def create_confounded_mnist_dataset(batch_size: int, debug: bool = True) \
-        -> Tuple[tf.data.Dataset, tf.data.Dataset, Dict[str, int], Dict[str, np.ndarray], Shape]:
+def create_confounded_mnist_dataset() -> Tuple[
+    Dict[str, tf.data.Dataset], tf.data.Dataset, Dict[str, int], Dict[str, np.ndarray], Shape]:
     input_shape = (-1, 28, 28, 3)
     ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False, as_supervised=True)
     train_mechanisms, test_mechanisms, parent_dims = get_apply_mechanisms_fn()
@@ -202,17 +195,12 @@ def create_confounded_mnist_dataset(batch_size: int, debug: bool = True) \
     # Get unconfounded datasets by looking at the parents
     train_data, marginals = get_marginal_datasets(train_data, train_parents, parent_dims)
 
-    test_data = tf.data.Dataset.zip(
-        {frozenset(parent_set): test_data for parent_set in powerset(parent_dims.keys())})
-
-    train_data = tfds.as_numpy(train_data.batch(batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE))
-    test_data = tfds.as_numpy(test_data.batch(batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE))
-    if debug:
-        for el in test_data:
-            for key, data in el.items():
-                order = np.argsort(np.argmax(data[1]['digit'], axis=-1))
-                plt.imshow(image_gallery(255. * data[0][order], num_images_to_display=128))
-                plt.title(str(key))
-                plt.show()
-            break
+    # if debug:
+    #     for el in test_data:
+    #         for key, data in el.items():
+    #             order = np.argsort(np.argmax(data[1]['digit'], axis=-1))
+    #             plt.imshow(image_gallery(255. * data[0][order], num_images_to_display=128))
+    #             plt.title(str(key))
+    #             plt.show()
+    #         break
     return train_data, test_data, parent_dims, marginals, input_shape
