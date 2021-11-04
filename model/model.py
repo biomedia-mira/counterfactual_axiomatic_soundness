@@ -56,11 +56,11 @@ def model_wrapper(source_dist: FrozenSet[str],
                   mechanism: Tuple[InitFn, MechanismFn],
                   noise_dim: int) -> Tuple[Model, Any]:
     target_dist = source_dist.union((do_parent_name,))
-    f_gan_init_fn, f_gan_apply_fn = f_gan(critic, mode='gan', trick_g=True)
+    divergence_init_fn, divergence_apply_fn = f_gan(critic, mode='gan', trick_g=True)
     mechanisms_init_fn, mechanism_apply_fn = mechanism
 
     def init_fn(rng: PRNGKey, input_shape: Shape) -> Params:
-        _, divergence_params = f_gan_init_fn(rng, input_shape)
+        _, divergence_params = divergence_init_fn(rng, input_shape)
         _, mechanism_params = mechanisms_init_fn(rng, input_shape)
         return (), (divergence_params, mechanism_params)
 
@@ -73,17 +73,15 @@ def model_wrapper(source_dist: FrozenSet[str],
             -> Tuple[Array, Any]:
         loss, output = jnp.zeros(()), {}
         # Assert the parents are correct
-        # jax.tree_map(lambda classifier, parent: classifier((image, parent)), classifiers, parents)
         for parent_name, parent in parents.items():
             cross_entropy, output[parent_name] = classifiers[parent_name]((image, parent))
             loss = loss + cross_entropy
-        divergence, critic_loss, gen_loss = f_gan_apply_fn(divergence_params, inputs[target_dist], (image, parents))
-        loss = loss + critic_loss + gen_loss
-        return loss, {**output, 'critic_loss': critic_loss[jnp.newaxis], 'generator_loss': gen_loss,
-                      'divergence': divergence[jnp.newaxis]}
+        div_loss, div_output = divergence_apply_fn(divergence_params, inputs[target_dist], (image, parents))
+        loss = loss + div_loss
+        return loss, {**output, **div_output}
 
-    def apply_fn(params: Params, inputs: Any, rng: PRNGKey) -> Tuple[Array, Any]:
-        divergence_params, mechanism_params = params
+    def apply_fn(divergence_params: Params, inputs: Any, rng: PRNGKey) -> Tuple[Array, Any]:
+        divergence_params, mechanism_params = divergence_params
         (image, parents) = inputs[source_dist]
         k1, k2 = jax.random.split(rng)
         do_parent, order = sample_parent_from_marginal(k1, batch_size=image.shape[0])
@@ -91,7 +89,7 @@ def model_wrapper(source_dist: FrozenSet[str],
 
         do_image, noise = mechanism_apply_fn(mechanism_params, image, parents, do_parent, do_noise)
         do_parents = {**parents, do_parent_name: do_parent}
-        loss, assertion_output = assert_dist(params, inputs, do_image, do_parents)
+        loss, assertion_output = assert_dist(divergence_params, inputs, do_image, do_parents)
 
         # identity constraint
         image_same, noise_same = mechanism_apply_fn(mechanism_params, image, parents, parents[do_parent_name], noise)
@@ -109,9 +107,9 @@ def model_wrapper(source_dist: FrozenSet[str],
                   'do_image': do_image[order],
                   'image_same': image_same[order],
                   'image_cycle': image_cycle[order],
-                  'assertion_output': assertion_output,
                   'id_constraint': id_constraint,
                   'cycle_constraint': cycle_constraint,
+                  **assertion_output
                   }
 
         return loss, output
@@ -130,4 +128,4 @@ def model_wrapper(source_dist: FrozenSet[str],
 
         return opt_init(params), update, get_params
 
-    return (init_fn, apply_fn, init_optimizer_fn), (f_gan_apply_fn, mechanism_apply_fn)
+    return (init_fn, apply_fn, init_optimizer_fn), (divergence_apply_fn, mechanism_apply_fn)

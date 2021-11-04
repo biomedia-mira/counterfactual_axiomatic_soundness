@@ -2,7 +2,7 @@ import shutil
 from functools import partial
 from pathlib import Path
 from typing import Any
-from typing import Dict, Tuple, FrozenSet
+from typing import Dict, Tuple, FrozenSet, Callable, Iterator
 
 import jax.numpy as jnp
 import numpy as np
@@ -60,7 +60,7 @@ def mechanism(parent_name: str, parent_dims: Dict[str, int], noise_dim: int) -> 
     dec_init_fn, dec_apply_fn = \
         serial(Dense(7 * 7 * 128), Norm1D, LeakyRelu, Reshape((-1, 7, 7, 128)),
                ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), Norm2D, LeakyRelu,
-               ConvTranspose(3, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), Sigmoid)
+               ConvTranspose(3, filter_shape=(4, 4), strides=(2, 2), padding='SAME'))
 
     extra_dim = sum(parent_dims.values()) + parent_dims[parent_name]
 
@@ -87,11 +87,22 @@ layers = (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='VALID'), Relu,
 classifier_layers, disc_layers = layers, layers
 
 
-def compile_fn(fn, params):
-    def _fn(*args, **kwargs):
+def compile_fn(fn: Callable, params: Params) -> Callable:
+    def _fn(*args: Any, **kwargs: Any) -> Any:
         return fn(params, *args, **kwargs)
 
     return _fn
+
+
+def to_numpy_iterator(data: tf.data.Dataset, batch_size: int) -> Any:
+    return tfds.as_numpy(data.batch(batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE))
+
+
+def select_parent(parent_name: str) -> Callable[[tf.Tensor, Dict[str, tf.Tensor]], Tuple[tf.Tensor, tf.Tensor]]:
+    def _select(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, tf.Tensor]:
+        return image, parents[parent_name]
+
+    return _select
 
 
 if __name__ == '__main__':
@@ -101,39 +112,44 @@ if __name__ == '__main__':
     if job_dir.exists() and overwrite:
         shutil.rmtree(job_dir)
 
-    noise_dim = 32
     train_datasets, test_dataset, parent_dims, marginals, input_shape = create_confounded_mnist_dataset()
 
+    # Train classifiers
     classifiers = {}
+    batch_size = 1024
     for parent_name, parent_dim in parent_dims.items():
-        model = classifier_wrapper(parent_name, parent_dim, classifier_layers)
+        classifier_model = classifier_wrapper(parent_dim, classifier_layers)
         model_path = job_dir / parent_name / 'model.npy'
         if model_path.exists():
             params = np.load(str(model_path), allow_pickle=True)
         else:
-            batch_size = 1024
             target_dist = frozenset((parent_name,))
-            train_data = tfds.as_numpy(
-                train_datasets[target_dist].batch(batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE))
-            test_data = tfds.as_numpy(test_dataset.batch(batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE))
-            params = train(model=model, input_shape=input_shape, job_dir=job_dir / parent_name, num_steps=1000,
-                           train_data=train_data, test_data=test_data, log_every=1, eval_every=100, save_every=100)
-        classifiers[parent_name] = compile_fn(model[1], params)
+            train_data = to_numpy_iterator(train_datasets[target_dist].map(select_parent(parent_name)), batch_size)
+            test_data = to_numpy_iterator(test_dataset.map(select_parent(parent_name)), batch_size)
+            params = train(model=classifier_model,
+                           input_shape=input_shape,
+                           job_dir=job_dir / parent_name,
+                           num_steps=1000,
+                           train_data=train_data,
+                           test_data=test_data,
+                           log_every=1,
+                           eval_every=100,
+                           save_every=100)
+        classifiers[parent_name] = compile_fn(fn=classifier_model[1], params=params)
 
+    # Train counterfactual functions
     interventions = (('color',), ('digit',))
+    noise_dim = 32
+    batch_size = 512
     mode = 1
     parent_names = parent_dims.keys()
     for intervention in interventions:
         source_dist = frozenset(parent_names) if mode == 0 else frozenset()
         target_dist = frozenset(parent_names) if mode == 0 else frozenset(intervention)
-
-        train_data = tf.data.Dataset.zip({source_dist: train_datasets[source_dist],
-                                          target_dist: train_datasets[target_dist]})
-        test_data = tf.data.Dataset.zip({source_dist: test_dataset,
-                                         target_dist: test_dataset})
-        batch_size = 512
-        train_data = tfds.as_numpy(train_data.batch(batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE))
-        test_data = tfds.as_numpy(test_data.batch(batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE))
+        train_data = to_numpy_iterator(tf.data.Dataset.zip({source_dist: train_datasets[source_dist],
+                                                            target_dist: train_datasets[target_dist]}), batch_size)
+        test_data = to_numpy_iterator(tf.data.Dataset.zip({source_dist: test_dataset,
+                                                           target_dist: test_dataset}), batch_size)
 
         parent_name = intervention[0]
         mech = mechanism(parent_name, parent_dims, noise_dim)
@@ -150,19 +166,6 @@ if __name__ == '__main__':
                        eval_every=500,
                        save_every=500)
 
-    # model_path = job_dir / 'model.npy'
-    # if model_path.exists():
-    #     params = np.load(str(model_path), allow_pickle=True)
-    # else:
-    #     params = train(model=model,
-    #                    input_shape=input_shape,
-    #                    job_dir=job_dir,
-    #                    num_steps=3000,
-    #                    train_data=train_data,
-    #                    test_data=test_data,
-    #                    log_every=1,
-    #                    eval_every=500,
-    #                    save_every=500)
     #
     # classifiers, divergences, mechanisms = build_functions(params, *functions)
     # repeat_test = {p_name + '_repeat': repeat_transform_test(mechanism, p_name, noise_dim, n_repeats=10)

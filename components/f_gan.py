@@ -1,5 +1,5 @@
 # https://arxiv.org/abs/1606.00709
-from typing import Any, Callable, Tuple
+from typing import Any, Callable, Tuple, Dict
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
@@ -107,14 +107,17 @@ def f_gan(critic: StaxLayer, mode: str = 'gan', trick_g: bool = False) -> StaxLa
         t_q_dist = critic_apply_fn(params, q_sample)
         return jnp.mean(activation(t_p_dist)) - jnp.mean(f_conj(activation(t_q_dist)))
 
-    def apply_fn(params: Params, p_sample: Array, q_sample: Array, **kwargs: Any) -> Tuple[Array, Array, Array]:
+    def apply_fn(params: Params, p_sample: Array, q_sample: Array, **kwargs: Any) -> Tuple[Array, Dict[str, Array]]:
         divergence = calc_divergence(params, p_sample, stop_gradient(q_sample))
         critic_loss = -divergence
         if not trick_g:
             generator_loss = calc_divergence(stop_gradient(params), p_sample, q_sample)
         else:
             generator_loss = -jnp.mean(activation(critic_apply_fn(stop_gradient(params), q_sample)))
-
-        return divergence, critic_loss, generator_loss
+        loss = critic_loss + generator_loss
+        output = {'divergence': divergence[jnp.newaxis],
+                  'critic_loss': critic_loss[jnp.newaxis],
+                  'generator_loss': generator_loss[jnp.newaxis]}
+        return loss, output
 
     return critic_init_fn, apply_fn
