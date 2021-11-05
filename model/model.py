@@ -8,13 +8,17 @@ from jax.experimental.optimizers import OptimizerState, ParamsFn
 from jax.lax import stop_gradient
 
 from components.f_gan import f_gan
-from components.stax_extension import Array, calc_accuracy, calc_cross_entropy, classifier, InitFn, PRNGKey, Shape, \
-    StaxLayer
+from components.classifier import classifier
+from components.stax_extension import Array, InitFn, PRNGKey, Shape, StaxLayer
 from model.train import Model, Params, UpdateFn
 
 
 def l2(x: Array, y: Array) -> Array:
-    return jnp.mean(jnp.sqrt(jnp.mean(jnp.power(x - y, 2), axis=tuple(range(1, x.ndim)))))
+    return jnp.mean(jax.vmap(lambda arr: jnp.linalg.norm(jnp.ravel(arr), ord=2))(x - y))
+
+# def l2(x: Array, y: Array) -> Array:
+#     diff = jnp.reshape(x - y, (x.shape[0], -1))
+#     return jnp.mean(jax.lax.cond(jnp.abs(diff) > 1, lambda x: jnp.linalg.norm(x, ord=1), lambda x: jnp.linalg.norm(x, ord=2)), diff)
 
 
 # [[[image, parents]], score]
@@ -26,13 +30,7 @@ MechanismFn = Callable[[Params, Array, Dict[str, Array], Array, Array], Tuple[Ar
 
 
 def classifier_wrapper(num_classes: int, layers: Iterable[StaxLayer]) -> Model:
-    init_fn, classify_fn = classifier(num_classes, layers)
-
-    def apply_fn(params: Params, inputs: Any, **kwargs: Any) -> Tuple[Array, Dict[str, Array]]:
-        image, target = inputs
-        prediction = classify_fn(params, image)
-        cross_entropy, accuracy = calc_cross_entropy(prediction, target), calc_accuracy(prediction, target)
-        return jnp.mean(cross_entropy), {'cross_entropy': cross_entropy, 'accuracy': accuracy}
+    init_fn, apply_fn = classifier(num_classes, layers)
 
     def init_optimizer_fn(params: Params) -> Tuple[OptimizerState, UpdateFn, Callable[[OptimizerState], Callable]]:
         opt_init, opt_update, get_params = optimizers.adam(step_size=5e-4, b1=0.5)
@@ -93,7 +91,7 @@ def model_wrapper(source_dist: FrozenSet[str],
 
         # identity constraint
         image_same, noise_same = mechanism_apply_fn(mechanism_params, image, parents, parents[do_parent_name], noise)
-        id_constraint = l2(image, image_same) + l2(do_noise, noise_same)
+        id_constraint = l2(image, image_same) #+ l2(do_noise, noise_same)
 
         # cycle constraint
         image_cycle, do_noise_cycle = mechanism_apply_fn(mechanism_params, stop_gradient(do_image), do_parents,
@@ -102,15 +100,15 @@ def model_wrapper(source_dist: FrozenSet[str],
 
         loss = loss + id_constraint + cycle_constraint
 
-        output = {'loss': loss[jnp.newaxis],
-                  'image': image[order],
-                  'do_image': do_image[order],
-                  'image_same': image_same[order],
-                  'image_cycle': image_cycle[order],
-                  'id_constraint': id_constraint,
-                  'cycle_constraint': cycle_constraint,
-                  **assertion_output
-                  }
+        output = {f'do_{do_parent_name}': {'loss': loss[jnp.newaxis],
+                                           'image': image[order],
+                                           'do_image': do_image[order],
+                                           'image_same': image_same[order],
+                                           'image_cycle': image_cycle[order],
+                                           'id_constraint': id_constraint,
+                                           'cycle_constraint': cycle_constraint,
+                                           **assertion_output
+                                           }}
 
         return loss, output
 

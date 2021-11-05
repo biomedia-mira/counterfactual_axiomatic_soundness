@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
-from jax.experimental.stax import Conv, ConvTranspose, Dense, LeakyRelu, Relu, serial, Sigmoid
+from jax.experimental.stax import Conv, ConvTranspose, Dense, LeakyRelu, Relu, serial, Sigmoid, Flatten
 from more_itertools import powerset
 
 from components.stax_extension import Array, PixelNorm2D, PRNGKey, Reshape, Shape, StaxLayer
@@ -17,19 +17,7 @@ from model.model import classifier_wrapper, model_wrapper
 from model.train import Params, train
 from test_bed import build_functions, cycle_transform_test, perform_tests, permute_transform_test, repeat_transform_test
 
-
-def dummy():
-    def init_fun(rng: PRNGKey, input_shape: Shape) -> Tuple[Shape, Params]:
-        return input_shape, ()
-
-    def apply_fun(params: Params, inputs: Array, **kwargs: Any) -> Array:
-        return inputs
-
-    return init_fun, apply_fun
-
-
 Norm2D = PixelNorm2D
-Norm1D = dummy()
 
 
 def broadcast(array: Array, shape: Tuple[int, ...]) -> Array:
@@ -58,7 +46,7 @@ def mechanism(parent_name: str, parent_dims: Dict[str, int], noise_dim: int) -> 
                Reshape((-1, 7 * 7 * 128)), Dense(hidden_dim), LeakyRelu)
 
     dec_init_fn, dec_apply_fn = \
-        serial(Dense(7 * 7 * 128), Norm1D, LeakyRelu, Reshape((-1, 7, 7, 128)),
+        serial(Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
                ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), Norm2D, LeakyRelu,
                ConvTranspose(3, filter_shape=(4, 4), strides=(2, 2), padding='SAME'))
 
@@ -84,7 +72,8 @@ def mechanism(parent_name: str, parent_dims: Dict[str, int], noise_dim: int) -> 
 layers = (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='VALID'), Relu,
           Conv(64 * 2, filter_shape=(4, 4), strides=(2, 2), padding='VALID'), Relu,
           Conv(64 * 3, filter_shape=(4, 4), strides=(2, 2), padding='VALID'), Relu)
-classifier_layers, disc_layers = layers, layers
+classifier_layers = layers
+disc_layers = (*layers, Flatten, Dense(1))
 
 
 def compile_fn(fn: Callable, params: Params) -> Callable:
