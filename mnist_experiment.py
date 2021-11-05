@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
-from jax.experimental.stax import Conv, ConvTranspose, Dense, LeakyRelu, Relu, serial, Sigmoid, Flatten
+from jax.experimental.stax import Conv, ConvTranspose, Dense, LeakyRelu, Relu, serial, Sigmoid, Flatten, Tanh
 from more_itertools import powerset
 
 from components.stax_extension import Array, PixelNorm2D, PRNGKey, Reshape, Shape, StaxLayer
@@ -50,21 +50,27 @@ def mechanism(parent_name: str, parent_dims: Dict[str, int], noise_dim: int) -> 
                ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), Norm2D, LeakyRelu,
                ConvTranspose(3, filter_shape=(4, 4), strides=(2, 2), padding='SAME'))
 
-    extra_dim = sum(parent_dims.values()) + parent_dims[parent_name]
+    extra_dim = 2 * parent_dims[parent_name] + noise_dim
 
     def init_fn(rng: PRNGKey, input_shape: Shape) -> Tuple[Shape, Params]:
         enc_output_shape, enc_params = enc_init_fn(rng, input_shape)
         output_shape, dec_params = dec_init_fn(rng, (*enc_output_shape[:-1], enc_output_shape[-1] + extra_dim))
         return output_shape, (enc_params, dec_params)
 
-    def apply_fn(params: Params, inputs: Array, parents: Dict[str, Array], do_parent: Array, noise: Array) \
+    def apply_fn(params: Params, inputs: Array, parents: Dict[str, Array], do_parent: Array, exogenous_noise: Array) \
             -> Tuple[Array, Array]:
-        latent_code = enc_apply_fn(params[0], inputs)
-        exogenous_noise = latent_code[..., :noise_dim]
-        new_latent_code = jnp.concatenate(
-            [noise, latent_code[..., noise_dim:], *[parents[key] for key in parent_dims.keys()], do_parent], axis=-1)
-        output = dec_apply_fn(params[1], new_latent_code)
-        return output, exogenous_noise
+        latent_code = jnp.concatenate([exogenous_noise, enc_apply_fn(params[0], inputs), parents[parent_name], do_parent], axis=-1)
+        return dec_apply_fn(params[1], latent_code)
+
+    return init_fn, apply_fn
+
+
+def abductor(parent_dims, noise_dim: int) -> StaxLayer:
+    init_fn, apply_fn = \
+        serial(condition_on_parents(parent_dims),
+               Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), Norm2D, LeakyRelu,
+               Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), Norm2D, LeakyRelu,
+               Reshape((-1, 7 * 7 * 128)), Dense(noise_dim))
 
     return init_fn, apply_fn
 
@@ -97,7 +103,7 @@ def select_parent(parent_name: str) -> Callable[[tf.Tensor, Dict[str, tf.Tensor]
 if __name__ == '__main__':
 
     overwrite = False
-    job_dir = Path('/tmp/class_test')
+    job_dir = Path('/tmp/abduction')
     if job_dir.exists() and overwrite:
         shutil.rmtree(job_dir)
 
@@ -127,8 +133,8 @@ if __name__ == '__main__':
         classifiers[parent_name] = compile_fn(fn=classifier_model[1], params=params)
 
     # Train counterfactual functions
-    interventions = (('color',), ('digit',))
-    noise_dim = 32
+    interventions = ( ('digit',), ('color',))
+    noise_dim = 128
     batch_size = 512
     mode = 1
     parent_names = parent_dims.keys()
@@ -143,12 +149,12 @@ if __name__ == '__main__':
         parent_name = intervention[0]
         mech = mechanism(parent_name, parent_dims, noise_dim)
         critic = serial(condition_on_parents(parent_dims), *disc_layers)
-        model, _ = model_wrapper(source_dist, parent_name, marginals[parent_name], classifiers, critic, mech, noise_dim)
+        model, _ = model_wrapper(source_dist, parent_name, marginals[parent_name], classifiers, critic, mech, abductor(parent_dims, noise_dim), noise_dim)
 
         params = train(model=model,
                        input_shape=input_shape,
                        job_dir=job_dir,
-                       num_steps=3000,
+                       num_steps=5000,
                        train_data=train_data,
                        test_data=test_data,
                        log_every=1,
