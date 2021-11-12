@@ -1,7 +1,8 @@
 from pathlib import Path
-from typing import Callable, Dict, Tuple, FrozenSet
+from typing import Callable, Dict, FrozenSet, Tuple
 from typing import List
 
+import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
@@ -13,6 +14,7 @@ from datasets.morphomnist import skeleton
 from datasets.morphomnist.morpho import ImageMorphology
 from datasets.utils import get_diagonal_confusion_matrix, get_uniform_confusion_matrix
 from datasets.utils import get_marginal_datasets
+from datasets.utils import image_gallery
 
 tf.config.experimental.set_visible_devices([], 'GPU')
 
@@ -195,13 +197,17 @@ def create_confounded_mnist_dataset() -> Tuple[
     # Get unconfounded datasets by looking at the parents
     train_data, marginals = get_marginal_datasets(train_data, train_parents, parent_dims)
 
-    # if debug:
-    #     for el in test_data:
-    #         for key, data in el.items():
-    #             order = np.argsort(np.argmax(data[1]['digit'], axis=-1))
-    #             plt.imshow(image_gallery(255. * data[0][order], num_images_to_display=128))
-    #             plt.title(str(key))
-    #             plt.show()
-    #         break
-    return train_data, test_data, parent_dims, marginals, input_shape
+    for key, dataset in train_data.items():
+        data = iter(dataset.batch(128)).__next__()
+        order = np.argsort(np.argmax(data[1]['digit'], axis=-1))
+        plt.imshow(image_gallery(127.5 * data[0].numpy()[order] + 127.5, num_images_to_display=128))
+        plt.title(f'train set {str(key)}')
+        plt.show()
 
+    data = iter(test_data.batch(128)).__next__()
+    order = np.argsort(np.argmax(data[1]['digit'], axis=-1))
+    plt.imshow(image_gallery(127.5 * data[0].numpy()[order] + 127.5, num_images_to_display=128))
+    plt.title(f'test set')
+    plt.show()
+
+    return train_data, test_data, parent_dims, marginals, input_shape

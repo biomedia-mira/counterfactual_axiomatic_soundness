@@ -16,8 +16,23 @@ from datasets.confounded_mnist import create_confounded_mnist_dataset
 from model.model import classifier_wrapper, model_wrapper
 from model.train import Params, train
 from test_bed import build_functions, cycle_transform_test, perform_tests, permute_transform_test, repeat_transform_test
+import jax
 
 Norm2D = PixelNorm2D
+
+def ResBlock(out_features, filter_shape, strides):
+    _init_fn, _apply_fn = serial(Conv(out_features, filter_shape=(3, 3), strides=(1, 1), padding='SAME'),
+                                 Norm2D, LeakyRelu,
+                                 Conv(out_features, filter_shape=filter_shape, strides=strides, padding='SAME'),
+                                 Norm2D, LeakyRelu)
+
+    def apply_fn(params: Params, inputs: Array, **kwargs: Any):
+        output = _apply_fn(params, inputs)
+        residual = jax.image.resize(jnp.repeat(inputs, output.shape[-1] // inputs.shape[-1], axis=-1),
+                                    shape=output.shape, method='bilinear')
+        return output + residual
+
+    return _init_fn, apply_fn
 
 
 def broadcast(array: Array, shape: Tuple[int, ...]) -> Array:
@@ -35,10 +50,6 @@ def condition_on_parents(parent_dims: Dict[str, int]) -> StaxLayer:
         return jnp.concatenate((image, broadcast(_parents, shape)), axis=-1)
 
     return init_fn, apply_fn
-
-
-###
-import jax
 
 
 #
@@ -114,7 +125,6 @@ import jax
 # ###
 def mechanism(parent_name: str, parent_dims: Dict[str, int], noise_dim: int) -> StaxLayer:
     hidden_dim = 1024
-    assert hidden_dim > noise_dim
     enc_init_fn, enc_apply_fn = \
         serial(Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), Norm2D, LeakyRelu,
                Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), Norm2D, LeakyRelu,
@@ -145,16 +155,24 @@ def mechanism(parent_name: str, parent_dims: Dict[str, int], noise_dim: int) -> 
 def abductor(parent_dims, noise_dim: int) -> StaxLayer:
     init_fn, apply_fn = \
         serial(condition_on_parents(parent_dims),
+               Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
                Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-               Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-               Flatten, Dense(noise_dim), stax_wrapper(lambda x: x / jnp.linalg.norm(x, ord=2)))
+               Flatten, Dense(noise_dim))
 
+    # stax_wrapper(lambda x: x / jnp.linalg.norm(x, ord=2)))
     return init_fn, apply_fn
 
 
-layers = (Conv(64 * 2, filter_shape=(4, 4), strides=(2, 2), padding='VALID'), LeakyRelu,
-          Conv(64 * 2, filter_shape=(4, 4), strides=(2, 2), padding='VALID'), LeakyRelu,
-          Conv(64 * 3, filter_shape=(4, 4), strides=(2, 2), padding='VALID'), LeakyRelu)
+# layers = (Conv(64 * 2, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+#           Conv(64 * 2, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+#           Conv(64 * 3, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+#           Flatten, Dense(1024), LeakyRelu)
+
+layers = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
+          ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
+          ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
+          Flatten, Dense(128), LeakyRelu)
+
 classifier_layers = layers
 disc_layers = (*layers, Flatten, Dense(1))
 
@@ -180,12 +198,11 @@ def select_parent(parent_name: str) -> Callable[[tf.Tensor, Dict[str, tf.Tensor]
 if __name__ == '__main__':
 
     overwrite = True
-    job_dir = Path('/tmp/abduction')
+    job_dir = Path('/tmp/no_abduction_grad')
     if job_dir.exists() and overwrite:
         shutil.rmtree(job_dir)
 
     train_datasets, test_dataset, parent_dims, marginals, input_shape = create_confounded_mnist_dataset()
-
     # Train classifiers
     classifiers = {}
     batch_size = 1024
