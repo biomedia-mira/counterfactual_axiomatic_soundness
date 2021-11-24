@@ -17,8 +17,20 @@ from model.model import classifier_wrapper, model_wrapper
 from model.train import Params, train
 from test_bed import build_functions, cycle_transform_test, perform_tests, permute_transform_test, repeat_transform_test
 import jax
+from model.augmentation import random_crop_and_rescale
 
 Norm2D = PixelNorm2D
+
+
+def up_conv(out_features: int, filter_shape=(4, 4), strides=(2, 2), padding='SAME'):
+    init_fn, apply_fn = Conv(out_features, filter_shape, padding='SAME')
+
+    def _apply_fn(params, inputs, **kwargs):
+        shape = (inputs.shape[0], inputs.shape[1] * 2, inputs.shape[2] * 2, inputs.shape[3])
+        return apply_fn(params, jax.image.resize(inputs, shape, method='bilinear'))
+
+    return init_fn, _apply_fn
+
 
 def ResBlock(out_features, filter_shape, strides):
     _init_fn, _apply_fn = serial(Conv(out_features, filter_shape=(3, 3), strides=(1, 1), padding='SAME'),
@@ -134,7 +146,7 @@ def mechanism(parent_name: str, parent_dims: Dict[str, int], noise_dim: int) -> 
         serial(Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
                ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), Norm2D, LeakyRelu,
                ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), Norm2D, LeakyRelu,
-               ConvTranspose(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Tanh)
+               Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Tanh)
 
     extra_dim = 2 * parent_dims[parent_name] + noise_dim
 
@@ -197,12 +209,15 @@ def select_parent(parent_name: str) -> Callable[[tf.Tensor, Dict[str, tf.Tensor]
 
 if __name__ == '__main__':
 
-    overwrite = True
-    job_dir = Path('/tmp/no_abduction_grad')
+    overwrite = False
+    job_dir = Path('/tmp/test_2')
     if job_dir.exists() and overwrite:
         shutil.rmtree(job_dir)
 
     train_datasets, test_dataset, parent_dims, marginals, input_shape = create_confounded_mnist_dataset()
+    train_datasets = {
+        key: dataset.map(lambda image, parents: (random_crop_and_rescale(image, fractions=(.3, .3)), parents))
+        for key, dataset in train_datasets.items()}
     # Train classifiers
     classifiers = {}
     batch_size = 1024
@@ -218,7 +233,7 @@ if __name__ == '__main__':
             params = train(model=classifier_model,
                            input_shape=input_shape,
                            job_dir=job_dir / parent_name,
-                           num_steps=1000,
+                           num_steps=2000,
                            train_data=train_data,
                            test_data=test_data,
                            log_every=1,
@@ -228,7 +243,7 @@ if __name__ == '__main__':
 
     # Train counterfactual functions
     interventions = (('digit',), ('color',))
-    noise_dim = 128
+    noise_dim = 64
     batch_size = 512
     mode = 1
     parent_names = parent_dims.keys()
@@ -244,7 +259,7 @@ if __name__ == '__main__':
         mech = mechanism(parent_name, parent_dims, noise_dim)
         critic = serial(condition_on_parents(parent_dims), *disc_layers)
         model, _ = model_wrapper(source_dist, parent_name, marginals[parent_name], classifiers, critic, mech,
-                                 abductor(parent_dims, noise_dim), noise_dim)
+                                 abductor(parent_dims, noise_dim))
 
         params = train(model=model,
                        input_shape=input_shape,

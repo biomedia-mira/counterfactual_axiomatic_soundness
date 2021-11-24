@@ -13,13 +13,8 @@ from components.stax_extension import Array, InitFn, PRNGKey, Shape, StaxLayer
 from model.train import Model, Params, UpdateFn
 
 
-def l2(x) -> Array:
+def l2(x: Array) -> Array:
     return jax.vmap(lambda arr: jnp.linalg.norm(jnp.ravel(arr), ord=2))(x)
-
-
-# def l2(x: Array, y: Array) -> Array:
-#     diff = jnp.reshape(x - y, (x.shape[0], -1))
-#     return jnp.mean(jax.lax.cond(jnp.abs(diff) > 1, lambda x: jnp.linalg.norm(x, ord=1), lambda x: jnp.linalg.norm(x, ord=2)), diff)
 
 
 # [[[image, parents]], score]
@@ -53,8 +48,7 @@ def model_wrapper(source_dist: FrozenSet[str],
                   classifiers: Dict[str, ClassifierFn],
                   critic: Tuple[InitFn, CriticFn],
                   mechanism: Tuple[InitFn, MechanismFn],
-                  abductor,
-                  noise_dim: int) -> Tuple[Model, Any]:
+                  abductor) -> Tuple[Model, Any]:
     target_dist = source_dist.union((do_parent_name,))
     divergence_init_fn, divergence_apply_fn = f_gan(critic, mode='gan', trick_g=True)
     mechanisms_init_fn, mechanism_apply_fn = mechanism
@@ -90,7 +84,6 @@ def model_wrapper(source_dist: FrozenSet[str],
         # do_noise = random.uniform(k2, shape=(image.shape[0], noise_dim), minval=-1., maxval=1.)
 
         noise_est = abductor_apply_fn(abductor_params, (image, parents))
-        # noise_est = jnp.zeros_like(noise_est)
         do_image = mechanism_apply_fn(mechanism_params, image, parents, do_parent, noise_est)
         do_parents = {**parents, do_parent_name: do_parent}
         loss, assertion_output = assert_dist(divergence_params, inputs, do_image, do_parents)
@@ -109,8 +102,8 @@ def model_wrapper(source_dist: FrozenSet[str],
                                          noise_est)
         cycle_constraint = l2(image - image_cycle)
 
-        loss = loss + jnp.mean(id_constraint) + jnp.mean(cycle_constraint) #+ jnp.mean(noise_constraint)
-        #loss = loss + jnp.mean(id_constraint)
+        loss = loss + (jnp.mean(id_constraint) + jnp.mean(cycle_constraint))  # + jnp.mean(noise_constraint)
+
         output = {f'do_{do_parent_name}': {'loss': loss[jnp.newaxis],
                                            'image': image[order],
                                            'do_image': do_image[order],
@@ -127,9 +120,6 @@ def model_wrapper(source_dist: FrozenSet[str],
     # def schedule(step: int, base_lr: float = 5e-4, gamma: float = .999) -> float:
     #     return base_lr * gamma ** step
 
-    schedule = optimizers.piecewise_constant(boundaries=[1000, 2000, 3000],
-                                             values=[5e-4, 5e-4 / 2, 5e-4 / 8, 5e-4 / 16])
-
     # def init_optimizer_fn(params: Params) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
     #     opt_init, opt_update, get_params = optimizers.adam(step_size=schedule, b1=0.5)
     #
@@ -142,7 +132,8 @@ def model_wrapper(source_dist: FrozenSet[str],
     #     return opt_init(params), update, get_params
 
     def init_optimizer_fn(params: Params) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
-        opt_init, opt_update, get_params = optimizers.adam(step_size=schedule, b1=0.0)
+        schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[5e-4, 5e-4 / 2, 5e-4 / 8])
+        opt_init, opt_update, get_params = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
 
         @jit
         def update(i: int, opt_state: OptimizerState, inputs: Any, rng: PRNGKey) -> Tuple[OptimizerState, Array, Any]:
