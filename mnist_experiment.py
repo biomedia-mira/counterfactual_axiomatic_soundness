@@ -19,13 +19,13 @@ from datasets.augmentation import random_crop_and_rescale
 Norm2D = PixelNorm2D
 
 
-def ResBlock(out_features, filter_shape, strides):
+def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int]):
     _init_fn, _apply_fn = serial(Conv(out_features, filter_shape=(3, 3), strides=(1, 1), padding='SAME'),
                                  Norm2D, LeakyRelu,
                                  Conv(out_features, filter_shape=filter_shape, strides=strides, padding='SAME'),
                                  Norm2D, LeakyRelu)
 
-    def apply_fn(params: Params, inputs: Array, **kwargs: Any):
+    def apply_fn(params: Params, inputs: Array, **kwargs: Any) -> Array:
         output = _apply_fn(params, inputs)
         residual = jax.image.resize(jnp.repeat(inputs, output.shape[-1] // inputs.shape[-1], axis=-1),
                                     shape=output.shape, method='bilinear')
@@ -131,9 +131,7 @@ if __name__ == '__main__':
         shutil.rmtree(job_dir)
 
     train_datasets, test_dataset, parent_dims, marginals, input_shape = create_confounded_mnist_dataset()
-    train_datasets = {
-        key: dataset.map(lambda image, parents: (random_crop_and_rescale(image, fractions=(.3, .3)), parents))
-        for key, dataset in train_datasets.items()}
+
     # Train classifiers
     classifiers = {}
     batch_size = 1024

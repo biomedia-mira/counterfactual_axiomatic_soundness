@@ -8,6 +8,7 @@ import tensorflow_datasets as tfds
 from numpy.typing import NDArray
 
 from components.stax_extension import Shape
+from datasets.augmentation import random_crop_and_rescale
 from datasets.confounding import get_diagonal_confusion_matrix, get_marginal_datasets, get_uniform_confusion_matrix, \
     Mechanism
 from datasets.mnist_mechanisms import function_dict_to_mechanism, get_colorize_fn, get_thickening_fn, get_thinning_fn
@@ -80,5 +81,9 @@ def create_confounded_mnist_dataset(data_dir: str = './data') \
     for key, dataset in train_data.items():
         show_images(dataset, f'train set {str(key)}')
     show_images(test_data, f'test set')
+
+    train_data = {
+        key: dataset.map(lambda image, parents: (random_crop_and_rescale(image, fractions=(.3, .3)), parents))
+        for key, dataset in train_data.items()}
 
     return train_data, test_data, parent_dims, marginals, input_shape

@@ -21,8 +21,10 @@ def l2(x: Array) -> Array:
 ClassifierFn = Callable[[Tuple[Array, Array]], Array]
 # [[params, [image, parents]], score]
 CriticFn = Callable[[Params, Tuple[Array, Array]], Array]
-# [[params, image, parents, do_parent, do_noise], do_image]
-MechanismFn = Callable[[Params, Array, Dict[str, Array], Array, Array], Array]
+# [[params, image, parent, do_parent, do_noise], do_image]
+MechanismFn = Callable[[Params, Array, Array, Array, Array], Array]
+#
+AbductorFn = Callable[[Params, Array], Array]
 
 
 def classifier_wrapper(num_classes: int, layers: Iterable[StaxLayer]) -> Model:
@@ -48,7 +50,7 @@ def model_wrapper(source_dist: FrozenSet[str],
                   classifiers: Dict[str, ClassifierFn],
                   critic: Tuple[InitFn, CriticFn],
                   mechanism: Tuple[InitFn, MechanismFn],
-                  abductor) -> Tuple[Model, Any]:
+                  abductor: Tuple[InitFn, AbductorFn]) -> Tuple[Model, Any]:
     target_dist = source_dist.union((do_parent_name,))
     divergence_init_fn, divergence_apply_fn = f_gan(critic, mode='gan', trick_g=True)
     mechanisms_init_fn, mechanism_apply_fn = mechanism
@@ -80,11 +82,12 @@ def model_wrapper(source_dist: FrozenSet[str],
         divergence_params, mechanism_params, abductor_params = divergence_params
         (image, parents) = inputs[source_dist]
         k1, k2 = jax.random.split(rng)
+        parent = parents[do_parent_name]
         do_parent, order = sample_parent_from_marginal(k1, batch_size=image.shape[0])
         # do_noise = random.uniform(k2, shape=(image.shape[0], noise_dim), minval=-1., maxval=1.)
 
         noise_est = abductor_apply_fn(abductor_params, (image, parents))
-        do_image = mechanism_apply_fn(mechanism_params, image, parents, do_parent, noise_est)
+        do_image = mechanism_apply_fn(mechanism_params, image, parent, do_parent, noise_est)
         do_parents = {**parents, do_parent_name: do_parent}
         loss, assertion_output = assert_dist(divergence_params, inputs, do_image, do_parents)
 
@@ -94,12 +97,11 @@ def model_wrapper(source_dist: FrozenSet[str],
         noise_constraint = jax.vmap(lambda x, y: -jnp.corrcoef(x, y)[0, 1] ** 2)(do_noise_est, noise_est)
 
         # identity constraint
-        image_same = mechanism_apply_fn(mechanism_params, image, parents, parents[do_parent_name], noise_est)
+        image_same = mechanism_apply_fn(mechanism_params, image, parent, parent, noise_est)
         id_constraint = l2(image - image_same)
 
         # cycle constraint
-        image_cycle = mechanism_apply_fn(mechanism_params, stop_gradient(do_image), do_parents, parents[do_parent_name],
-                                         noise_est)
+        image_cycle = mechanism_apply_fn(mechanism_params, stop_gradient(do_image), do_parent, parent, noise_est)
         cycle_constraint = l2(image - image_cycle)
 
         loss = loss + (jnp.mean(id_constraint) + jnp.mean(cycle_constraint))  # + jnp.mean(noise_constraint)
