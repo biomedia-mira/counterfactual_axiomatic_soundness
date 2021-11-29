@@ -117,20 +117,6 @@ def model_wrapper(source_dist: FrozenSet[str],
 
         return loss, output
 
-    # def schedule(step: int, base_lr: float = 5e-4, gamma: float = .999) -> float:
-    #     return base_lr * gamma ** step
-
-    # def init_optimizer_fn(params: Params) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
-    #     opt_init, opt_update, get_params = optimizers.adam(step_size=schedule, b1=0.5)
-    #
-    #     @jit
-    #     def update(i: int, opt_state: OptimizerState, inputs: Any, rng: PRNGKey) -> Tuple[OptimizerState, Array, Any]:
-    #         (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
-    #         opt_state = opt_update(i, grads, opt_state)
-    #         return opt_state, loss, outputs
-    #
-    #     return opt_init(params), update, get_params
-
     def init_optimizer_fn(params: Params) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
         schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[5e-4, 5e-4 / 2, 5e-4 / 8])
         opt_init, opt_update, get_params = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
@@ -139,12 +125,10 @@ def model_wrapper(source_dist: FrozenSet[str],
         def update(i: int, opt_state: OptimizerState, inputs: Any, rng: PRNGKey) -> Tuple[OptimizerState, Array, Any]:
             (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
             zero_grads = jax.tree_map(lambda x: x * 0, grads)
-            grad_gen = (zero_grads[0], grads[1], grads[2])
-            opt_state = opt_update(i, grad_gen, opt_state)
+            opt_state = opt_update(i, (zero_grads[0], grads[1], grads[2]), opt_state)
             for _ in range(1):
                 (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
-                grad_disc = (grads[0], zero_grads[1], zero_grads[2])
-                opt_state = opt_update(i, grad_disc, opt_state)
+                opt_state = opt_update(i, (grads[0], zero_grads[1], zero_grads[2]), opt_state)
             return opt_state, loss, outputs
 
         return opt_init(params), update, get_params

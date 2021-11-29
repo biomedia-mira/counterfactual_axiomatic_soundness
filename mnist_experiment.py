@@ -1,35 +1,22 @@
 import shutil
-from functools import partial
 from pathlib import Path
 from typing import Any
-from typing import Dict, Tuple, FrozenSet, Callable, Iterator
+from typing import Dict, Tuple, Callable
 
 import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
-from jax.experimental.stax import Conv, ConvTranspose, Dense, LeakyRelu, Relu, serial, Sigmoid, Flatten, Tanh
-from more_itertools import powerset
+from jax.experimental.stax import Conv, ConvTranspose, Dense, LeakyRelu, serial, Flatten, Tanh
 
-from components.stax_extension import Array, PixelNorm2D, PRNGKey, Reshape, Shape, StaxLayer, stax_wrapper
-from datasets.confounded_mnist import create_confounded_mnist_dataset
+from components.stax_extension import Array, PixelNorm2D, PRNGKey, Reshape, Shape, StaxLayer
+from datasets.mnist_mechanisms import create_confounded_mnist_dataset
 from model.model import classifier_wrapper, model_wrapper
 from model.train import Params, train
-from test_bed import build_functions, cycle_transform_test, perform_tests, permute_transform_test, repeat_transform_test
 import jax
-from model.augmentation import random_crop_and_rescale
+from datasets.augmentation import random_crop_and_rescale
 
 Norm2D = PixelNorm2D
-
-
-def up_conv(out_features: int, filter_shape=(4, 4), strides=(2, 2), padding='SAME'):
-    init_fn, apply_fn = Conv(out_features, filter_shape, padding='SAME')
-
-    def _apply_fn(params, inputs, **kwargs):
-        shape = (inputs.shape[0], inputs.shape[1] * 2, inputs.shape[2] * 2, inputs.shape[3])
-        return apply_fn(params, jax.image.resize(inputs, shape, method='bilinear'))
-
-    return init_fn, _apply_fn
 
 
 def ResBlock(out_features, filter_shape, strides):
@@ -64,77 +51,6 @@ def condition_on_parents(parent_dims: Dict[str, int]) -> StaxLayer:
     return init_fn, apply_fn
 
 
-#
-# def synthesis_block(fmaps_out: int, c_dim: int, num_image_channels: int = 3) -> StaxLayer:
-#     block_init_fn, block_apply_fn = serial(Conv(fmaps_out, filter_shape=(3, 3), padding='SAME'), PixelNorm2D, LeakyRelu,
-#                                            ConvTranspose(fmaps_out, filter_shape=(4, 4), strides=(2, 2),
-#                                                          padding='SAME'),
-#                                            PixelNorm2D, LeakyRelu)
-#
-#     to_rgb_init_fn, to_rgb_apply_fn = Conv(num_image_channels, filter_shape=(1, 1))
-#
-#     def init_fn(rng: PRNGKey, input_shape: Shape) -> Tuple[Shape, Params]:
-#         k1, k2 = jax.random.split(rng, num=2)
-#         output_shape, block_params = block_init_fn(k1, (*input_shape[:-1], input_shape[-1] + c_dim))
-#         _, to_rgb_params = to_rgb_init_fn(k2, output_shape)
-#         return output_shape, (block_params, to_rgb_params)
-#
-#     def apply_fn(params: Params, inputs: Tuple[Array, Array, Array], **kwargs: Any) -> Tuple[
-#         Array, Array, Array]:
-#         block_params, to_rgb_params = params
-#         x, y, c = inputs
-#         c_low_res = jax.image.resize(c, (*x.shape[:-1], c.shape[-1]), method='bilinear')
-#         x = block_apply_fn(block_params, jnp.concatenate((x, c_low_res), axis=-1))
-#         y = jax.image.resize(y, (*x.shape[:-1], y.shape[-1]), method='bilinear')
-#         y = to_rgb_apply_fn(to_rgb_params, x)
-#         return x, y, c
-#
-#     return init_fn, apply_fn
-#
-#
-# def mechanism(parent_name: str, parent_dims: Dict[str, int], noise_dim: int,
-#               c_dim: int = 64,
-#               num_image_channels: int = 3,
-#               resolution: int = 32) -> StaxLayer:
-#     resolution_log2 = int(jnp.log2(resolution))
-#     extra_dim = 2 * parent_dims[parent_name] + noise_dim
-#
-#     def nf(res: int):
-#         return 64
-#
-#     c_encode_init_fn, c_encode_apply_fb = serial(Conv(c_dim, filter_shape=(3, 3), padding='SAME'), PixelNorm2D,
-#                                                  LeakyRelu,
-#                                                  Conv(c_dim, filter_shape=(3, 3), padding='SAME'), PixelNorm2D,
-#                                                  LeakyRelu)
-#
-#     # transform_init_fn, transform_apply_fn = \
-#     #     serial(*[synthesis_block(nf(res - 1), c_dim, num_image_channels) for res in range(2, resolution_log2 + 1)])
-#
-#     transform_init_fn, transform_apply_fn = \
-#         serial(*[synthesis_block(nf(res - 1), c_dim, num_image_channels) for res in range(2, resolution_log2)])
-#
-#     def mechanism_init_fn(rng: PRNGKey, input_shape: Shape) -> Tuple[Shape, Params]:
-#         k1, k2, k3 = jax.random.split(rng, num=3)
-#         const_input = jax.random.normal(k1, (1, 4, 4, nf(1)))
-#         _, c_encode_params = c_encode_init_fn(k2, (*input_shape[:-1], input_shape[-1] + extra_dim))
-#         output_shape, transform_params = transform_init_fn(k2, const_input.shape)
-#         return output_shape, (const_input, c_encode_params, transform_params)
-#
-#     def mechanism_apply_fn(params: Params, inputs: Array, parents: Dict[str, Array], do_parent: Array,
-#                            exogenous_noise: Array, **kwargs: Any) -> Array:
-#         const_input, c_encode_params, transform_params = params
-#         _parents = jnp.concatenate((parents[parent_name], do_parent, exogenous_noise), axis=-1)
-#         c = jnp.concatenate((inputs, broadcast(_parents, (*inputs.shape[:-1], _parents.shape[-1]))), axis=-1)
-#         c = c_encode_apply_fb(c_encode_params, c)
-#         x = jnp.repeat(const_input, c.shape[0], axis=0)
-#         y = jnp.zeros((*x.shape[:-1], num_image_channels))
-#         x, y, c = transform_apply_fn(transform_params, (x, y, c))
-#         return y
-#
-#     return mechanism_init_fn, mechanism_apply_fn
-
-
-# ###
 def mechanism(parent_name: str, parent_dims: Dict[str, int], noise_dim: int) -> StaxLayer:
     hidden_dim = 1024
     enc_init_fn, enc_apply_fn = \
@@ -210,7 +126,7 @@ def select_parent(parent_name: str) -> Callable[[tf.Tensor, Dict[str, tf.Tensor]
 if __name__ == '__main__':
 
     overwrite = False
-    job_dir = Path('/tmp/test_2')
+    job_dir = Path('/tmp/test_3')
     if job_dir.exists() and overwrite:
         shutil.rmtree(job_dir)
 

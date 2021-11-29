@@ -11,7 +11,7 @@ from jax.experimental.optimizers import OptimizerState, Params, ParamsFn
 from tqdm import tqdm
 
 from components.stax_extension import Array, PRNGKey, Shape
-from datasets.utils import image_gallery
+from datasets.confounding import image_gallery
 
 InitModelFn = Callable[[PRNGKey, Shape], Params]
 ApplyModelFn = Callable

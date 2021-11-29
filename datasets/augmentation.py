@@ -3,16 +3,6 @@ from typing import Tuple
 import tensorflow as tf
 
 
-#
-# def random_crop_and_rescale(image: tf.Tensor, fractions: Tuple[float, float] = (.2, .2)):
-#     shape = image.shape[:-1]
-#     offset = tuple(
-#         tf.random.uniform(minval=0, maxval=int(s * fpd), dtype=tf.int32, shape=()) for s, fpd in zip(shape, fractions))
-#     slices = tuple((slice(0, s - o) for s, o in zip(shape, offset)))
-#     cropped_image = image[slices]
-#     return tf.image.resize(cropped_image, size=shape)
-
-
 def tf_randint(minval: int, maxval: int, shape: Tuple = ()) -> tf.Tensor:
     return tf.random.uniform(minval=minval, maxval=maxval, dtype=tf.int32, shape=shape)
 
