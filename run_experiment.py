@@ -23,6 +23,36 @@ def compile_fn(fn: Callable, params: Params) -> Callable:
     return _fn
 
 
+def train_classifier(job_dir,
+                     parent_name,
+                     parent_dim,
+                     classifier_layers,
+                     train_datasets,
+                     test_dataset,
+                     batch_size,
+                     num_steps):
+    model = classifier(parent_dim, classifier_layers)
+    model_path = job_dir / parent_name / 'model.npy'
+    if model_path.exists():
+        params = np.load(str(model_path), allow_pickle=True)
+    else:
+        target_dist = frozenset((parent_name,))
+        select_parent = lambda image, parents: (image, parents[parent_name])
+        train_data = to_numpy_iterator(train_datasets[target_dist].map(select_parent), batch_size)
+        test_data = to_numpy_iterator(test_dataset.map(select_parent), batch_size)
+        params = train(model=model,
+                       input_shape=input_shape,
+                       job_dir=job_dir / parent_name,
+                       num_steps=num_steps,
+                       seed=seed,
+                       train_data=train_data,
+                       test_data=test_data,
+                       log_every=1,
+                       eval_every=50,
+                       save_every=50)
+        return compile_fn(fn=model[1], params=params)
+
+
 def run_experiment(job_dir: Path,
                    # Data
                    train_datasets: Dict[FrozenSet[str], tf.data.Dataset],
@@ -51,7 +81,7 @@ def run_experiment(job_dir: Path,
     # Train classifiers
     classifiers = {}
     for parent_name, parent_dim in parent_dims.items():
-        classifier_model = classifier(parent_dim, classifier_layers)
+        model = classifier(parent_dim, classifier_layers)
         model_path = job_dir / parent_name / 'model.npy'
         if model_path.exists():
             params = np.load(str(model_path), allow_pickle=True)
@@ -60,7 +90,7 @@ def run_experiment(job_dir: Path,
             select_parent = lambda image, parents: (image, parents[parent_name])
             train_data = to_numpy_iterator(train_datasets[target_dist].map(select_parent), classifier_batch_size)
             test_data = to_numpy_iterator(test_dataset.map(select_parent), classifier_batch_size)
-            params = train(model=classifier_model,
+            params = train(model=model,
                            input_shape=input_shape,
                            job_dir=job_dir / parent_name,
                            num_steps=classifier_num_steps,
@@ -70,14 +100,13 @@ def run_experiment(job_dir: Path,
                            log_every=1,
                            eval_every=50,
                            save_every=50)
-        classifiers[parent_name] = compile_fn(fn=classifier_model[1], params=params)
+        classifiers[parent_name] = compile_fn(fn=model[1], params=params)
 
     # Train mechanisms
     mechanisms_compiled = {}
     for intervention in interventions:
         parent_name = intervention[0]
-        source_dist = frozenset()
-        target_dist = frozenset(intervention)
+        source_dist, target_dist = frozenset(), frozenset(intervention)
         model = functional_counterfactual(source_dist, parent_name, marginals[parent_name], classifiers, critic,
                                           mechanisms[parent_name], abductor)
         model_path = job_dir / f'do_{parent_name}' / 'model.npy'
@@ -86,22 +115,20 @@ def run_experiment(job_dir: Path,
         else:
             train_data = to_numpy_iterator(
                 tf.data.Dataset.zip({source_dist: train_datasets[source_dist],
-                                     target_dist: train_datasets[target_dist]}),
-                mechanism_batch_size)
+                                     target_dist: train_datasets[target_dist]}), mechanism_batch_size)
             test_data = to_numpy_iterator(tf.data.Dataset.zip({source_dist: test_dataset,
-                                                               target_dist: test_dataset}),
-                                          mechanism_batch_size)
+                                                               target_dist: test_dataset}), mechanism_batch_size)
             params = train(model=model,
                            input_shape=input_shape,
                            job_dir=job_dir / f'do_{parent_name}',
                            train_data=train_data,
                            test_data=test_data,
-                           num_steps=mechanism_num_steps,  # 5000
+                           num_steps=mechanism_num_steps,
                            seed=seed,
                            log_every=1,
                            eval_every=250,
                            save_every=250)
-        mechanisms_compiled[parent_name] = compile_fn(mechanisms[parent_name][1], params[1])
+        mechanisms_compiled[parent_name] = compile_fn(fn=mechanisms[parent_name][1], params=params[1])
     return mechanisms_compiled
     # Test
     # repeat_test = {p_name + '_repeat': repeat_transform_test(mechanism, p_name, noise_dim, n_repeats=10)

@@ -1,16 +1,14 @@
 import itertools
 from pathlib import Path
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, Optional
 
 import jax
 import jax.numpy as jnp
 from jax.experimental.optimizers import Params
 from tqdm import tqdm
 
-from components import ApplyFn, InitFn, InitOptimizerFn, Shape
+from components import Model, Shape
 from trainer.logger import accumulate_output, get_writer_fn
-
-Model = Tuple[InitFn, ApplyFn, InitOptimizerFn]
 
 
 def train(model: Model,

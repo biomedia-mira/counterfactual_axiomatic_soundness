@@ -7,7 +7,7 @@ from jax.experimental import optimizers
 from jax.experimental.optimizers import OptimizerState, ParamsFn
 from jax.lax import stop_gradient
 
-from components import Array, InitFn, Model, PRNGKey, Params, Shape, UpdateFn
+from components import Array, InitFn, Model, KeyArray, Params, Shape, UpdateFn
 from components.f_gan import f_gan
 
 # [[[image, parents]], score]
@@ -36,13 +36,13 @@ def functional_counterfactual(source_dist: FrozenSet[str],
     mechanisms_init_fn, mechanism_apply_fn = mechanism
     abductor_init_fn, abductor_apply_fn = abductor
 
-    def init_fn(rng: PRNGKey, input_shape: Shape) -> Params:
+    def init_fn(rng: KeyArray, input_shape: Shape) -> Params:
         divergence_output_shape, divergence_params = divergence_init_fn(rng, input_shape)
         mechanism_output_shape, mechanism_params = mechanisms_init_fn(rng, input_shape)
         abductor_output_shape, abductor_params = abductor_init_fn(rng, input_shape)
         return mechanism_output_shape, (divergence_params, mechanism_params, abductor_params)
 
-    def sample_parent_from_marginal(rng: PRNGKey, batch_size: int) -> Tuple[Array, Array]:
+    def sample_parent_from_marginal(rng: KeyArray, batch_size: int) -> Tuple[Array, Array]:
         parent_dim = marginal_dist.shape[0]
         _do_parent = random.choice(rng, parent_dim, shape=(batch_size,), p=marginal_dist)
         return jnp.eye(parent_dim)[_do_parent], jnp.argsort(_do_parent)
@@ -58,7 +58,7 @@ def functional_counterfactual(source_dist: FrozenSet[str],
         loss = loss + div_loss
         return loss, {**output, **div_output}
 
-    def apply_fn(divergence_params: Params, inputs: Any, rng: PRNGKey) -> Tuple[Array, Any]:
+    def apply_fn(divergence_params: Params, inputs: Any, rng: KeyArray) -> Tuple[Array, Any]:
         divergence_params, mechanism_params, abductor_params = divergence_params
         (image, parents) = inputs[source_dist]
         k1, k2 = jax.random.split(rng)
@@ -104,7 +104,7 @@ def functional_counterfactual(source_dist: FrozenSet[str],
         opt_init, opt_update, get_params = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
 
         @jit
-        def update(i: int, opt_state: OptimizerState, inputs: Any, rng: PRNGKey) -> Tuple[OptimizerState, Array, Any]:
+        def update(i: int, opt_state: OptimizerState, inputs: Any, rng: KeyArray) -> Tuple[OptimizerState, Array, Any]:
             (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
             zero_grads = jax.tree_map(lambda x: x * 0, grads)
             opt_state = opt_update(i, (zero_grads[0], grads[1], grads[2]), opt_state)

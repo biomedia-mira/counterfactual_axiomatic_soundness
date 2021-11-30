@@ -6,7 +6,7 @@ from jax.experimental import optimizers, stax
 from jax.experimental.optimizers import OptimizerState
 from jax.experimental.stax import Dense, Flatten, LogSoftmax
 
-from components import Array, Model, PRNGKey, Params, StaxLayer, UpdateFn
+from components import Array, Model, KeyArray, Params, StaxLayer, UpdateFn
 
 
 def classifier(num_classes: int, layers: Iterable[StaxLayer]) -> Model:
@@ -23,7 +23,7 @@ def classifier(num_classes: int, layers: Iterable[StaxLayer]) -> Model:
         opt_init, opt_update, get_params = optimizers.adam(step_size=5e-4, b1=0.9)
 
         @jit
-        def update(i: int, opt_state: OptimizerState, inputs: Any, rng: PRNGKey) -> Tuple[OptimizerState, Array, Any]:
+        def update(i: int, opt_state: OptimizerState, inputs: Any, rng: KeyArray) -> Tuple[OptimizerState, Array, Any]:
             (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs)
             opt_state = opt_update(i, grads, opt_state)
             return opt_state, loss, outputs
