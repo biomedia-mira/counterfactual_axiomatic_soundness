@@ -1,13 +1,12 @@
 import shutil
 from pathlib import Path
 from typing import Any
-from typing import Callable, Dict, Iterable, Tuple, FrozenSet
+from typing import Callable, Dict, Iterable
 from typing import FrozenSet
 
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
-from jax.experimental.stax import serial
 from numpy.typing import NDArray
 
 from components.stax_extension import Params, StaxLayer, StaxLayerConstructor
@@ -37,7 +36,7 @@ def run_experiment(job_dir: Path,
                    mechanism_constructor: StaxLayerConstructor,
                    critic_constructor: StaxLayerConstructor,
                    from_joint: bool = True,
-                   overwrite: bool = False):
+                   overwrite: bool = False) -> None:
     job_dir = Path(job_dir)
     if job_dir.exists() and overwrite:
         shutil.rmtree(job_dir)
@@ -80,7 +79,8 @@ def run_experiment(job_dir: Path,
 
         parent_name = intervention[0]
 
-        model, _ = model_wrapper(source_dist, parent_name, marginals[parent_name], classifiers, critic, mechanism, abductor)
+        model, _ = model_wrapper(source_dist, parent_name, marginals[parent_name], classifiers, critic, mechanism,
+                                 abductor)
 
         params = train(model=model,
                        input_shape=input_shape,
