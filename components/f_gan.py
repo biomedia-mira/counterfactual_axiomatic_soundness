@@ -1,5 +1,5 @@
 # https://arxiv.org/abs/1606.00709
-from typing import Any, Callable, Tuple, Dict
+from typing import Any, Callable, Dict, Tuple
 
 import jax.numpy as jnp
 from jax.lax import stop_gradient
@@ -99,7 +99,7 @@ def get_activation_and_f_conj(mode: str) -> FDivergence:
 
 
 def f_gan(critic: StaxLayer, mode: str = 'gan', trick_g: bool = False) -> StaxLayer:
-    critic_init_fn, critic_apply_fn = critic
+    init_fn, critic_apply_fn = critic
     activation, f_conj = get_activation_and_f_conj(mode)
 
     def calc_divergence(params: Params, p_sample: Array, q_sample: Array) -> Array:
@@ -120,4 +120,4 @@ def f_gan(critic: StaxLayer, mode: str = 'gan', trick_g: bool = False) -> StaxLa
                   'generator_loss': generator_loss[jnp.newaxis]}
         return loss, output
 
-    return critic_init_fn, apply_fn
+    return init_fn, apply_fn

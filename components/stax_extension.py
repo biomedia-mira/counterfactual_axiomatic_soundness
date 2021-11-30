@@ -2,7 +2,7 @@ from typing import Any, Callable, Tuple, Union
 
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.optimizers import Params
+from jax.experimental.optimizers import OptimizerState, Params, ParamsFn
 from jax.experimental.stax import ones, zeros
 from jax.nn import normalize
 from jax.random import KeyArray
@@ -14,6 +14,9 @@ InitFn = Callable[[PRNGKey, Shape], Tuple[Shape, Params]]
 ApplyFn = Callable
 StaxLayer = Tuple[InitFn, ApplyFn]
 StaxLayerConstructor = Callable[..., StaxLayer]
+UpdateFn = Callable[[int, OptimizerState, Any, PRNGKey], Tuple[OptimizerState, Array, Any]]
+InitOptimizerFn = Callable[[Params], Tuple[OptimizerState, UpdateFn, ParamsFn]]
+Model = Tuple[InitFn, ApplyFn, InitOptimizerFn]
 
 
 def stax_wrapper(fn: Callable[[Array], Array]) -> StaxLayer:

@@ -1,18 +1,17 @@
 import shutil
 from pathlib import Path
-from typing import Any
-from typing import Callable, Dict, Iterable
-from typing import FrozenSet
+from typing import Any, Callable, Dict, FrozenSet, Iterable
 
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
+from jax.experimental import optimizers
 from numpy.typing import NDArray
 
-from components.stax_extension import Params, StaxLayer, StaxLayerConstructor
-from components.stax_extension import Shape
-from model.model import classifier_wrapper, model_wrapper
-from model.train import train
+from components.classifier import classifier
+from components.functional_counterfactual import model_wrapper
+from components.stax_extension import Params, Shape, StaxLayer, StaxLayerConstructor
+from trainer import train
 
 
 def to_numpy_iterator(data: tf.data.Dataset, batch_size: int) -> Any:
@@ -37,6 +36,7 @@ def run_experiment(job_dir: Path,
                    critic_constructor: StaxLayerConstructor,
                    from_joint: bool = True,
                    overwrite: bool = False) -> None:
+    seed = 100
     job_dir = Path(job_dir)
     if job_dir.exists() and overwrite:
         shutil.rmtree(job_dir)
@@ -45,7 +45,7 @@ def run_experiment(job_dir: Path,
     classifiers = {}
     batch_size = 1024
     for parent_name, parent_dim in parent_dims.items():
-        classifier_model = classifier_wrapper(parent_dim, classifier_layers)
+        classifier_model = classifier(parent_dim, classifier_layers, optimizers.adam(step_size=5e-4, b1=0.9))
         model_path = job_dir / parent_name / 'model.npy'
         if model_path.exists():
             params = np.load(str(model_path), allow_pickle=True)
@@ -58,6 +58,7 @@ def run_experiment(job_dir: Path,
                            input_shape=input_shape,
                            job_dir=job_dir / parent_name,
                            num_steps=2000,
+                           seed=seed,
                            train_data=train_data,
                            test_data=test_data,
                            log_every=1,
