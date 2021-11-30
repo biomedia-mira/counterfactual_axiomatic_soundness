@@ -1,16 +1,14 @@
 import shutil
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable
+from typing import Any, Callable, Dict, FrozenSet
 
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
-from jax.experimental import optimizers
 from numpy.typing import NDArray
 
-from components.classifier import classifier
-from components.functional_counterfactual import model_wrapper
-from components.stax_extension import Params, Shape, StaxLayer, StaxLayerConstructor
+from components.stax_extension import Params, Shape
+from models import classifier, functional_counterfactual
 from trainer import train
 
 
@@ -31,12 +29,9 @@ def run_experiment(job_dir: Path,
                    parent_dims: Dict[str, int],
                    marginals: Dict[str, NDArray],
                    input_shape: Shape,
-                   classifier_layers: Iterable[StaxLayer],
-                   mechanism_constructor: StaxLayerConstructor,
-                   critic_constructor: StaxLayerConstructor,
+                   seed: int = 1,
                    from_joint: bool = True,
                    overwrite: bool = False) -> None:
-    seed = 100
     job_dir = Path(job_dir)
     if job_dir.exists() and overwrite:
         shutil.rmtree(job_dir)
@@ -45,7 +40,7 @@ def run_experiment(job_dir: Path,
     classifiers = {}
     batch_size = 1024
     for parent_name, parent_dim in parent_dims.items():
-        classifier_model = classifier(parent_dim, classifier_layers, optimizers.adam(step_size=5e-4, b1=0.9))
+        classifier_model = classifier(parent_dim, classifier_layers)
         model_path = job_dir / parent_name / 'model.npy'
         if model_path.exists():
             params = np.load(str(model_path), allow_pickle=True)
@@ -79,21 +74,26 @@ def run_experiment(job_dir: Path,
                                                            target_dist: test_dataset}), batch_size)
 
         parent_name = intervention[0]
+        ##
 
-        model, _ = model_wrapper(source_dist, parent_name, marginals[parent_name], classifiers, critic, mechanism,
-                                 abductor)
+
+        ##
+        model = functional_counterfactual(source_dist, parent_name, marginals[parent_name], classifiers,
+                                          critic,
+                                          mechanism,
+                                          abductor)
 
         params = train(model=model,
                        input_shape=input_shape,
                        job_dir=job_dir,
-                       num_steps=5000,
                        train_data=train_data,
                        test_data=test_data,
+                       num_steps=5000,
+                       seed=seed,
                        log_every=1,
                        eval_every=500,
                        save_every=500)
 
-    #
     # classifiers, divergences, mechanisms = build_functions(params, *functions)
     # repeat_test = {p_name + '_repeat': repeat_transform_test(mechanism, p_name, noise_dim, n_repeats=10)
     #                for p_name, mechanism in mechanisms.items()}

@@ -1,17 +1,15 @@
 import itertools
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-from jax.experimental.optimizers import OptimizerState, Params, ParamsFn
+from jax.experimental.optimizers import Params
 from tqdm import tqdm
 
-from components.stax_extension import ApplyFn, Array, InitFn, PRNGKey, Shape
+from components.stax_extension import ApplyFn, InitFn, InitOptimizerFn, Shape
 from trainer.logger import accumulate_output, get_writer_fn
 
-UpdateFn = Callable[[int, OptimizerState, Any, PRNGKey], Tuple[OptimizerState, Array, Any]]
-InitOptimizerFn = Callable[[Params], Tuple[OptimizerState, UpdateFn, ParamsFn]]
 Model = Tuple[InitFn, ApplyFn, InitOptimizerFn]
 
 
@@ -26,10 +24,10 @@ def train(model: Model,
           eval_every: int,
           save_every: int) -> Params:
     job_dir.mkdir(exist_ok=True, parents=True)
-    init_fn, apply_fn, init_optimizer_fn = model
     train_writer = get_writer_fn(job_dir, 'train')
     test_writer = get_writer_fn(job_dir, 'test')
 
+    init_fn, apply_fn, init_optimizer_fn = model
     rng = jax.random.PRNGKey(seed)
     _, params = init_fn(rng, input_shape)
     opt_state, update, get_params = init_optimizer_fn(params)
