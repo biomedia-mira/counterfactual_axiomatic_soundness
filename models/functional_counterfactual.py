@@ -7,17 +7,17 @@ from jax.experimental import optimizers
 from jax.experimental.optimizers import OptimizerState, ParamsFn
 from jax.lax import stop_gradient
 
+from components import Array, InitFn, Model, PRNGKey, Params, Shape, UpdateFn
 from components.f_gan import f_gan
-from components.stax_extension import Array, InitFn, Model, PRNGKey, Params, Shape, UpdateFn
 
 # [[[image, parents]], score]
 ClassifierFn = Callable[[Tuple[Array, Array]], Array]
 # [[params, [image, parents]], score]
-CriticFn = Callable[[Params, Tuple[Array, Array]], Array]
+Critic = Tuple[InitFn, Callable[[Params, Tuple[Array, Array]], Array]]
 # [[params, image, parent, do_parent, do_noise], do_image]
-MechanismFn = Callable[[Params, Array, Array, Array, Array], Array]
+Mechanism = Tuple[InitFn, Callable[[Params, Array, Array, Array, Array], Array]]
 #
-AbductorFn = Callable[[Params, Array], Array]
+Abductor = Tuple[InitFn, Callable[[Params, Array], Array]]
 
 
 def l2(x: Array) -> Array:
@@ -28,9 +28,9 @@ def functional_counterfactual(source_dist: FrozenSet[str],
                               do_parent_name: str,
                               marginal_dist: Array,
                               classifiers: Dict[str, ClassifierFn],
-                              critic: Tuple[InitFn, CriticFn],
-                              mechanism: Tuple[InitFn, MechanismFn],
-                              abductor: Tuple[InitFn, AbductorFn]) -> Model:
+                              critic: Critic,
+                              mechanism: Mechanism,
+                              abductor: Abductor) -> Model:
     target_dist = source_dist.union((do_parent_name,))
     divergence_init_fn, divergence_apply_fn = f_gan(critic, mode='gan', trick_g=True)
     mechanisms_init_fn, mechanism_apply_fn = mechanism
@@ -38,11 +38,8 @@ def functional_counterfactual(source_dist: FrozenSet[str],
 
     def init_fn(rng: PRNGKey, input_shape: Shape) -> Params:
         divergence_output_shape, divergence_params = divergence_init_fn(rng, input_shape)
-        assert len(divergence_output_shape) == 2 and divergence_output_shape[1] == 1
         mechanism_output_shape, mechanism_params = mechanisms_init_fn(rng, input_shape)
-        assert mechanism_output_shape == input_shape
         abductor_output_shape, abductor_params = abductor_init_fn(rng, input_shape)
-        assert len(abductor_output_shape) == 2 and abductor_output_shape[1] == noise_dim
         return mechanism_output_shape, (divergence_params, mechanism_params, abductor_params)
 
     def sample_parent_from_marginal(rng: PRNGKey, batch_size: int) -> Tuple[Array, Array]:

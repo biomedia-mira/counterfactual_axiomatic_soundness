@@ -4,7 +4,7 @@ from typing import Any, Callable, Dict, Tuple
 import jax.numpy as jnp
 from jax.lax import stop_gradient
 
-from components.stax_extension import Array, Params, StaxLayer
+from components import Array, Params, StaxLayer
 
 FDivergence = Tuple[Callable[[Array], Array], Callable[[Array], Array]]
 

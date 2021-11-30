@@ -6,7 +6,7 @@ from jax.experimental import optimizers, stax
 from jax.experimental.optimizers import OptimizerState
 from jax.experimental.stax import Dense, Flatten, LogSoftmax
 
-from components.stax_extension import Array, Model, PRNGKey, Params, StaxLayer, UpdateFn
+from components import Array, Model, PRNGKey, Params, StaxLayer, UpdateFn
 
 
 def classifier(num_classes: int, layers: Iterable[StaxLayer]) -> Model:

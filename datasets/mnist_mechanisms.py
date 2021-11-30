@@ -5,9 +5,9 @@ import tensorflow as tf
 from numpy.typing import NDArray
 from skimage import draw, morphology, transform
 
-from datasets.confounding import IMAGE, Mechanism
 from datasets.morphomnist import skeleton
 from datasets.morphomnist.morpho import ImageMorphology
+from datasets.utils import IMAGE, Mechanism
 
 
 def function_dict_to_mechanism(function_dict: Dict[int, Callable[[IMAGE], IMAGE]], cm: NDArray[np.float_]) -> Mechanism:

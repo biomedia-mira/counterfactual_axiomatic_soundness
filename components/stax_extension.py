@@ -1,22 +1,12 @@
-from typing import Any, Callable, Tuple, Union
+from typing import Any, Callable, Dict, Tuple, Union
 
 import jax.numpy as jnp
-import numpy as np
-from jax.experimental.optimizers import OptimizerState, Params, ParamsFn
-from jax.experimental.stax import ones, zeros
+from jax import jit, value_and_grad
+from jax.experimental.optimizers import Optimizer, OptimizerState
+from jax.experimental.stax import Dense, Flatten, LogSoftmax, ones, serial, zeros
 from jax.nn import normalize
-from jax.random import KeyArray
 
-Array = Union[jnp.ndarray, np.ndarray, Any]
-Shape = Tuple[int, ...]
-PRNGKey = KeyArray
-InitFn = Callable[[PRNGKey, Shape], Tuple[Shape, Params]]
-ApplyFn = Callable
-StaxLayer = Tuple[InitFn, ApplyFn]
-StaxLayerConstructor = Callable[..., StaxLayer]
-UpdateFn = Callable[[int, OptimizerState, Any, PRNGKey], Tuple[OptimizerState, Array, Any]]
-InitOptimizerFn = Callable[[Params], Tuple[OptimizerState, UpdateFn, ParamsFn]]
-Model = Tuple[InitFn, ApplyFn, InitOptimizerFn]
+from components import Array, PRNGKey, Params, Shape, StaxLayer, UpdateFn
 
 
 def stax_wrapper(fn: Callable[[Array], Array]) -> StaxLayer:
@@ -55,7 +45,31 @@ def reshape(output_shape: Shape) -> StaxLayer:
     return init_fun, apply_fun
 
 
-Reshape = reshape
-LayerNorm2D = layer_norm(axis=(1, 2, 3))
-LayerNorm1D = layer_norm(axis=(1,))
-PixelNorm2D = layer_norm(axis=(3,))
+# def classifier_head(num_classes: int) -> StaxLayer:
+#     init_fn, classify_fn = serial(Flatten, Dense(num_classes), LogSoftmax)
+#
+#     def apply_fn(params: Params, inputs: Any, **kwargs: Any) -> Tuple[Array, Dict[str, Array]]:
+#         image, target = inputs
+#         prediction = classify_fn(params, image)
+#         accuracy = jnp.equal(jnp.argmax(prediction, axis=-1), jnp.argmax(target, axis=-1))
+#         cross_entropy = -jnp.sum(prediction * target, axis=-1)
+#         return jnp.mean(cross_entropy), {'cross_entropy': cross_entropy, 'accuracy': accuracy}
+#
+#     return init_fn, apply_fn
+#
+#
+# def optimize(stax_layer: StaxLayer, optimizer: Optimizer):
+#     init_fn, apply_fn = stax_layer
+#
+#     def init_optimizer_fn(params: Params) -> Tuple[OptimizerState, UpdateFn, Callable[[OptimizerState], Callable]]:
+#         opt_init, opt_update, get_params = optimizer
+#
+#         @jit
+#         def update(i: int, opt_state: OptimizerState, inputs: Any, rng: PRNGKey) -> Tuple[OptimizerState, Array, Any]:
+#             (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs)
+#             opt_state = opt_update(i, grads, opt_state)
+#             return opt_state, loss, outputs
+#
+#         return opt_init(params), update, get_params
+#
+#     return init_fn, apply_fn, init_optimizer_fn

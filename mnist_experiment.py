@@ -1,14 +1,16 @@
-import shutil
-from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh, serial
 
-from components.f_gan import f_gan
-from components.stax_extension import Array, PRNGKey, Params, PixelNorm2D, Reshape, Shape, StaxLayer
+from components import Array, PRNGKey, Params, PixelNorm2D, Reshape, StaxLayer
+from components.stax_extension import Shape
 from datasets.confounded_mnist import create_confounded_mnist_dataset
+from datasets.mnist_mechanisms import function_dict_to_mechanism, get_colorize_fn, get_thickening_fn, get_thinning_fn
+from datasets.utils import Mechanism, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
+from run_experiment import run_experiment
 
 
 def broadcast(array: Array, shape: Tuple[int, ...]) -> Array:
@@ -43,14 +45,6 @@ def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[in
     return _init_fn, apply_fn
 
 
-layers = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
-          ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
-          ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
-          Flatten, Dense(128), LeakyRelu)
-
-classifier_layers = layers
-
-
 def mechanism(parent_dim: int, noise_dim: int) -> StaxLayer:
     hidden_dim = 1024
     enc_init_fn, enc_apply_fn = \
@@ -79,32 +73,77 @@ def mechanism(parent_dim: int, noise_dim: int) -> StaxLayer:
     return init_fn, apply_fn
 
 
+layers = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
+          ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
+          ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
+          Flatten, Dense(128), LeakyRelu)
+
+
+def experiment_0(control: bool = False) -> Tuple[List[Mechanism], List[Mechanism], Dict[str, int]]:
+    parent_dims = {'digit': 10, 'color': 10}
+    test_colorize_cm = get_uniform_confusion_matrix(10, 10)
+    train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if not control else test_colorize_cm
+    train_colorize_fn = get_colorize_fn(train_colorize_cm)
+    test_colorize_fn = get_colorize_fn(test_colorize_cm)
+    return [train_colorize_fn], [test_colorize_fn], parent_dims
+
+
+# Even digits have much higher chance of swelling
+def experiment_1(control: bool = False) -> Tuple[List[Mechanism], List[Mechanism], Dict[str, int]]:
+    parent_dims = {'digit': 10, 'thickness': 2, 'color': 10}
+
+    even_heavy_cm = np.zeros(shape=(10, 2))
+    even_heavy_cm[0:-1:2] = (.1, .9)
+    even_heavy_cm[1::2] = (.9, .1)
+
+    test_thickening_cm = get_uniform_confusion_matrix(10, 2)
+    test_colorize_cm = get_uniform_confusion_matrix(10, 10)
+    train_thickening_cm = even_heavy_cm if not control else test_thickening_cm
+    train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if not control else test_colorize_cm
+
+    function_dict = {0: get_thinning_fn(), 1: get_thickening_fn()}
+    train_thickening_fn = function_dict_to_mechanism(function_dict, train_thickening_cm)
+    test_thickening_fn = function_dict_to_mechanism(function_dict, test_thickening_cm)
+    train_colorize_fn = get_colorize_fn(train_colorize_cm)
+    test_colorize_fn = get_colorize_fn(test_colorize_cm)
+
+    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims
+
+
 if __name__ == '__main__':
-
     overwrite = False
-    job_dir = Path('/tmp/test_3')
-    if job_dir.exists() and overwrite:
-        shutil.rmtree(job_dir)
+    for control in [True, False]:
+        for experiment in [experiment_0, experiment_1]:
+            job_dir = '/tmp/'
+            train_mechanisms, test_mechanisms, parent_dims = experiment(control)
 
-    train_datasets, test_dataset, parent_dims, marginals, input_shape = create_confounded_mnist_dataset()
+            train_datasets, test_dataset, marginals, input_shape = \
+                create_confounded_mnist_dataset('./data', train_mechanisms, test_mechanisms, parent_dims)
 
-    noise_dim = 64
-    f_gan = f_gan(serial(condition_on_parents(parent_dims), *layers, Flatten, Dense(1)), mode='gan', trick_g=True)
+            noise_dim = 64
+            classifier_layers = layers
+            critic = serial(condition_on_parents(parent_dims), *layers, Flatten, Dense(1))
+            abductor = serial(condition_on_parents(parent_dims),
+                              Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+                              Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+                              Flatten, Dense(noise_dim))
+            mechanisms = {parent_name: mechanism(parent_dim, noise_dim)
+                          for parent_name, parent_dim in parent_dims.items()}
 
-    abductor = serial(condition_on_parents(parent_dims),
-                      Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-                      Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-                      Flatten, Dense(noise_dim))
-
-    mechanism(parent_dims[parent_name], noise_dim)
-
-    #
-    # classifiers, divergences, mechanisms = build_functions(params, *functions)
-    # repeat_test = {p_name + '_repeat': repeat_transform_test(mechanism, p_name, noise_dim, n_repeats=10)
-    #                for p_name, mechanism in mechanisms.items()}
-    # cycle_test = {p_name + '_cycle': cycle_transform_test(mechanism, p_name, noise_dim, parent_dims[p_name])
-    #               for p_name, mechanism in mechanisms.items()}
-    # permute_test = {'permute': permute_transform_test({p_name: mechanisms[p_name]
-    #                                                    for p_name in ['color', 'thickness']}, parent_dims, noise_dim)}
-    # tests = {**repeat_test, **cycle_test, **permute_test}
-    # res = perform_tests(test_data, tests)
+            run_experiment(job_dir=job_dir,
+                           train_datasets=train_datasets,
+                           test_dataset=test_dataset,
+                           parent_dims=parent_dims,
+                           marginals=marginals,
+                           input_shape=input_shape,
+                           classifier_layers=classifier_layers,
+                           classifier_batch_size=1024,
+                           classifier_num_steps=2000,
+                           interventions=None,
+                           critic=critic,
+                           abductor=abductor,
+                           mechanisms=mechanisms,
+                           mechanism_batch_size=512,
+                           mechanism_num_steps=5000,
+                           seed=1,
+                           overwrite=False)

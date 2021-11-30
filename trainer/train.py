@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from jax.experimental.optimizers import Params
 from tqdm import tqdm
 
-from components.stax_extension import ApplyFn, InitFn, InitOptimizerFn, Shape
+from components import ApplyFn, InitFn, InitOptimizerFn, Shape
 from trainer.logger import accumulate_output, get_writer_fn
 
 Model = Tuple[InitFn, ApplyFn, InitOptimizerFn]

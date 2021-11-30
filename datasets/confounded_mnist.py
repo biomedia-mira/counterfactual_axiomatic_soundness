@@ -8,11 +8,20 @@ import tensorflow_datasets as tfds
 from numpy.typing import NDArray
 
 from components.stax_extension import Shape
-from datasets.augmentation import random_crop_and_rescale
-from datasets.confounding import get_diagonal_confusion_matrix, get_marginal_datasets, get_uniform_confusion_matrix, \
-    Mechanism
-from datasets.mnist_mechanisms import function_dict_to_mechanism, get_colorize_fn, get_thickening_fn, get_thinning_fn
-from datasets.utils import image_gallery, load_cached_dataset
+from datasets.utils import Mechanism, get_marginal_datasets, image_gallery, load_cached_dataset
+
+
+def tf_randint(minval: int, maxval: int, shape: Tuple = ()) -> tf.Tensor:
+    return tf.random.uniform(minval=minval, maxval=maxval, dtype=tf.int32, shape=shape)
+
+
+def random_crop_and_rescale(image: tf.Tensor, fractions: Tuple[float, float] = (.2, .2)) -> tf.Tensor:
+    shape = image.shape[:-1]
+    start = tuple(tf_randint(minval=0, maxval=int(s * fpd / 2.)) for s, fpd in zip(shape, fractions))
+    stop = tuple(tf_randint(minval=int(s * (1. - fpd / 2.)), maxval=s) for s, fpd in zip(shape, fractions))
+    slices = tuple((slice(_start, _stop) for _start, _stop in zip(start, stop)))
+    cropped_image = image[slices]
+    return tf.image.resize(cropped_image, size=shape)
 
 
 def get_encode_fn(parent_dims: Dict[str, int]) \
@@ -37,36 +46,14 @@ def show_images(dataset: tf.data.Dataset, title: str) -> None:
     plt.show()
 
 
-def get_apply_mechanisms_fn() -> Tuple[List[Mechanism], List[Mechanism], Dict[str, int]]:
-    parent_dims = {'digit': 10, 'thickness': 2, 'color': 10}
-
-    # even digits have much higher chance of swelling
-    train_thickening_cm = np.zeros(shape=(10, 2))
-    train_thickening_cm[0:-1:2] = (.1, .9)
-    train_thickening_cm[1::2] = (.9, .1)
-    function_dict = {0: get_thinning_fn(), 1: get_thickening_fn()}
-    train_thickening_fn = function_dict_to_mechanism(function_dict, train_thickening_cm)
-
-    train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1)
-    train_colorize_fn = get_colorize_fn(train_colorize_cm)
-
-    train_mechanisms = [train_thickening_fn, train_colorize_fn]
-
-    test_thickening_cm = get_uniform_confusion_matrix(10, 2)
-    test_thickening_fn = function_dict_to_mechanism(function_dict, test_thickening_cm)
-    test_colorize_cm = get_uniform_confusion_matrix(10, 10)
-    test_colorize_fn = get_colorize_fn(test_colorize_cm)
-    test_mechanisms = [test_thickening_fn, test_colorize_fn]
-
-    return train_mechanisms, test_mechanisms, parent_dims
-
-
-def create_confounded_mnist_dataset(data_dir: str = './data') \
-        -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, int], Dict[str, NDArray], Shape]:
+def create_confounded_mnist_dataset(data_dir: str,
+                                    train_mechanisms: List[Mechanism],
+                                    test_mechanisms: List[Mechanism],
+                                    parent_dims: Dict[str, int]) \
+        -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, NDArray], Shape]:
     tf.config.experimental.set_visible_devices([], 'GPU')
     input_shape = (-1, 28, 28, 3)
     ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False, data_dir=f'{data_dir}/mnist')
-    train_mechanisms, test_mechanisms, parent_dims = get_apply_mechanisms_fn()
 
     encode_fn = get_encode_fn(parent_dims)
     dataset_dir = Path(f'{data_dir}/confounded_mnist')
@@ -86,4 +73,4 @@ def create_confounded_mnist_dataset(data_dir: str = './data') \
         key: dataset.map(lambda image, parents: (random_crop_and_rescale(image, fractions=(.3, .3)), parents))
         for key, dataset in train_data.items()}
 
-    return train_data, test_data, parent_dims, marginals, input_shape
+    return train_data, test_data, marginals, input_shape
