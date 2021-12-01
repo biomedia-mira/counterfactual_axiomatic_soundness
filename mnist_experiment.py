@@ -10,24 +10,9 @@ from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu
 
 from components import Array, KeyArray, Params, PixelNorm2D, Reshape, Shape, StaxLayer
 from datasets.confounded_mnist import create_confounded_mnist_dataset, function_dict_to_confounding_fn, \
-    get_colorize_fn, get_thickening_fn, get_thinning_fn
+    get_colorize_fn, get_thickening_fn, get_thinning_fn, get_fracture_fn
 from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
 from run_experiment import run_experiment
-
-
-def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int]):
-    _init_fn, _apply_fn = serial(Conv(out_features, filter_shape=(3, 3), strides=(1, 1), padding='SAME'),
-                                 PixelNorm2D, LeakyRelu,
-                                 Conv(out_features, filter_shape=filter_shape, strides=strides, padding='SAME'),
-                                 PixelNorm2D, LeakyRelu)
-
-    def apply_fn(params: Params, inputs: Array, **kwargs: Any) -> Array:
-        output = _apply_fn(params, inputs)
-        residual = jax.image.resize(jnp.repeat(inputs, output.shape[-1] // inputs.shape[-1], axis=-1),
-                                    shape=output.shape, method='bilinear')
-        return output + residual
-
-    return _init_fn, apply_fn
 
 
 def mechanism(parent_dim: int, noise_dim: int) -> StaxLayer:
@@ -58,6 +43,21 @@ def mechanism(parent_dim: int, noise_dim: int) -> StaxLayer:
     return init_fn, apply_fn
 
 
+def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int]):
+    _init_fn, _apply_fn = serial(Conv(out_features, filter_shape=(3, 3), strides=(1, 1), padding='SAME'),
+                                 PixelNorm2D, LeakyRelu,
+                                 Conv(out_features, filter_shape=filter_shape, strides=strides, padding='SAME'),
+                                 PixelNorm2D, LeakyRelu)
+
+    def apply_fn(params: Params, inputs: Array, **kwargs: Any) -> Array:
+        output = _apply_fn(params, inputs)
+        residual = jax.image.resize(jnp.repeat(inputs, output.shape[-1] // inputs.shape[-1], axis=-1),
+                                    shape=output.shape, method='bilinear')
+        return output + residual
+
+    return _init_fn, apply_fn
+
+
 def experiment_0(control: bool = False) -> Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int]]:
     parent_dims = {'digit': 10, 'color': 10}
     test_colorize_cm = get_uniform_confusion_matrix(10, 10)
@@ -67,7 +67,7 @@ def experiment_0(control: bool = False) -> Tuple[List[ConfoundingFn], List[Confo
     return [train_colorize_fn], [test_colorize_fn], parent_dims
 
 
-# Even digits have much higher chance of swelling
+# Even digits have much higher chance of thick
 def experiment_1(control: bool = False) -> Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int]]:
     parent_dims = {'digit': 10, 'thickness': 2, 'color': 10}
 
@@ -81,6 +81,27 @@ def experiment_1(control: bool = False) -> Tuple[List[ConfoundingFn], List[Confo
     train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if not control else test_colorize_cm
 
     function_dict = {0: get_thinning_fn(), 1: get_thickening_fn()}
+    train_thickening_fn = function_dict_to_confounding_fn(function_dict, train_thickening_cm)
+    test_thickening_fn = function_dict_to_confounding_fn(function_dict, test_thickening_cm)
+    train_colorize_fn = get_colorize_fn(train_colorize_cm)
+    test_colorize_fn = get_colorize_fn(test_colorize_cm)
+
+    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims
+
+
+def experiment_2(control: bool = False) -> Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int]]:
+    parent_dims = {'digit': 10, 'thickness': 2, 'color': 10}
+
+    even_heavy_cm = np.zeros(shape=(10, 2))
+    even_heavy_cm[0:-1:2] = (.1, .9)
+    even_heavy_cm[1::2] = (.9, .1)
+
+    test_thickening_cm = get_uniform_confusion_matrix(10, 2)
+    test_colorize_cm = get_uniform_confusion_matrix(10, 10)
+    train_thickening_cm = even_heavy_cm if not control else test_thickening_cm
+    train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if not control else test_colorize_cm
+
+    function_dict = {0: lambda x: x, 1: get_fracture_fn(num_frac=1)}
     train_thickening_fn = function_dict_to_confounding_fn(function_dict, train_thickening_cm)
     test_thickening_fn = function_dict_to_confounding_fn(function_dict, test_thickening_cm)
     train_colorize_fn = get_colorize_fn(train_colorize_cm)
@@ -106,11 +127,15 @@ if __name__ == '__main__':
                        Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu)
 
     for control in [True, False]:
-        for i, experiment in enumerate([experiment_0, experiment_1]):
+        for i, experiment in enumerate([experiment_0, experiment_1, experiment_2]):
             job_dir = args.job_dir / f'exp_{i:d}' + ('_control' if control else '')
             train_confounding_fns, test_confounding_fns, parent_dims = experiment(control)
             train_datasets, test_dataset, marginals, input_shape = \
                 create_confounded_mnist_dataset('./data', train_confounding_fns, test_confounding_fns, parent_dims)
+
+            schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[5e-4, 5e-4 / 2, 5e-4 / 8])
+            counterfactual_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
+
             run_experiment(job_dir=job_dir,
                            seed=1,
                            train_datasets=train_datasets,
@@ -126,6 +151,7 @@ if __name__ == '__main__':
                            abductor_layers=abductor_layers,
                            mechanism_constructor=mechanism,
                            noise_dim=noise_dim,
+                           counterfactual_optimizer=counterfactual_optimizer,
                            counterfactual_batch_size=512,
                            counterfactual_num_steps=5000,
                            overwrite=args.overwrite)

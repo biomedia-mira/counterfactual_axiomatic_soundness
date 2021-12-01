@@ -60,6 +60,7 @@ def run_experiment(job_dir: Path,
                    abductor_layers: Iterable[StaxLayer],
                    mechanism_constructor: Callable[[int, int], Tuple[InitFn, MechanismFn]],
                    noise_dim: int,
+                   counterfactual_optimizer: Optimizer,
                    counterfactual_batch_size: int,
                    counterfactual_num_steps: int,
                    # Misc
@@ -93,14 +94,15 @@ def run_experiment(job_dir: Path,
         classifiers[parent_name] = compile_fn(fn=model[1], params=params)
 
     # Train mechanisms
-    mechanisms = {}
+    mechanisms, divergences, abductors = {}, {}, {}
+
     for parent_name, parent_dim in parent_dims.items():
         source_dist, target_dist = frozenset(), frozenset((parent_name,))
         critic = serial(condition_on_parents(parent_dims), *critic_layers, Flatten, Dense(1))
         abductor = serial(condition_on_parents(parent_dims), *abductor_layers, Flatten, Dense(noise_dim))
         mechanism = mechanism_constructor(parent_dim, noise_dim)
         model = functional_counterfactual(source_dist, parent_name, marginals[parent_name],
-                                          classifiers, critic, mechanism, abductor)
+                                          classifiers, critic, mechanism, abductor, counterfactual_optimizer)
         model_path = job_dir / f'do_{parent_name}' / 'model.npy'
         if model_path.exists():
             params = np.load(str(model_path), allow_pickle=True)
@@ -120,7 +122,9 @@ def run_experiment(job_dir: Path,
                            log_every=1,
                            eval_every=250,
                            save_every=250)
+        divergences[parent_name] = compile_fn(fn=critic[1], params=params[0])
         mechanisms[parent_name] = compile_fn(fn=mechanism[1], params=params[1])
+        abductors[parent_name] = compile_fn(fn=abductor[1], params=params[2])
 
     # Test
     # repeat_test = {p_name + '_repeat': repeat_transform_test(mechanism, p_name, noise_dim, n_repeats=10)

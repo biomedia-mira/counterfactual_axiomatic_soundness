@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax import jit, random, value_and_grad
 from jax.experimental import optimizers
-from jax.experimental.optimizers import OptimizerState, ParamsFn
+from jax.experimental.optimizers import OptimizerState, ParamsFn, Optimizer
 from jax.lax import stop_gradient
 
 from components import Array, InitFn, KeyArray, Model, Params, Shape, UpdateFn, f_gan
@@ -29,7 +29,8 @@ def functional_counterfactual(source_dist: FrozenSet[str],
                               classifiers: Dict[str, ClassifierFn],
                               critic: Tuple[InitFn, CriticFn],
                               mechanism: Tuple[InitFn, MechanismFn],
-                              abductor: Tuple[InitFn, AbductorFn]) -> Model:
+                              abductor: Tuple[InitFn, AbductorFn],
+                              optimizer: Optimizer) -> Model:
     target_dist = source_dist.union((do_parent_name,))
     divergence_init_fn, divergence_apply_fn = f_gan(critic, mode='gan', trick_g=True)
     mechanisms_init_fn, mechanism_apply_fn = mechanism
@@ -99,8 +100,7 @@ def functional_counterfactual(source_dist: FrozenSet[str],
         return loss, output
 
     def init_optimizer_fn(params: Params) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
-        schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[5e-4, 5e-4 / 2, 5e-4 / 8])
-        opt_init, opt_update, get_params = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
+        opt_init, opt_update, get_params = optimizer
 
         @jit
         def update(i: int, opt_state: OptimizerState, inputs: Any, rng: KeyArray) -> Tuple[OptimizerState, Array, Any]:
