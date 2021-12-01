@@ -9,8 +9,8 @@ from numpy.typing import NDArray
 from tqdm import tqdm
 
 IMAGE = NDArray[np.uint8]
-Mechanism = Callable[[IMAGE, int], Tuple[IMAGE, int]]
-confounding = 1
+ConfoundingFn = Callable[[IMAGE, int], Tuple[IMAGE, int]]
+
 
 def image_gallery(array: np.ndarray, ncols: int = 16, num_images_to_display: int = 128) -> np.ndarray:
     array = np.clip(array, a_min=0, a_max=255) / 255.
@@ -43,13 +43,13 @@ def get_diagonal_confusion_matrix(num_rows: int, num_columns: int, noise: float 
                                                          - np.eye(num_rows)) * noise / (num_rows - 1))
 
 
-def apply_mechanisms_to_dataset(dataset: tf.data.Dataset, mechanisms: List[Mechanism], parent_dims: Dict[str, int]) \
-        -> Tuple[IMAGE, Dict[str, NDArray[np.int_]]]:
+def apply_confounding_fns_to_dataset(dataset: tf.data.Dataset, confounding_fns: List[ConfoundingFn],
+                                     parent_dims: Dict[str, int]) -> Tuple[IMAGE, Dict[str, NDArray[np.int_]]]:
     image_list, parents_list = [], []
     for image, label in tqdm(dataset.as_numpy_iterator()):
         parents = [int(label)]
-        for mechanism in mechanisms:
-            image, new_parent = mechanism(image, label)
+        for confounding_fn in confounding_fns:
+            image, new_parent = confounding_fn(image, label)
             parents.append(new_parent)
         image_list.append(image)
         parents_list.append(np.array(parents).astype(np.int64))
@@ -98,7 +98,7 @@ def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, np.ndarra
     return datasets, marginals
 
 
-def load_cached_dataset(dataset_dir: Path, dataset: tf.data.Dataset, mechanisms: List[Mechanism],
+def load_cached_dataset(dataset_dir: Path, dataset: tf.data.Dataset, confounding_fns: List[ConfoundingFn],
                         parent_dims: Dict[str, int]) -> Tuple[tf.data.Dataset, Dict[str, NDArray]]:
     parents_path = str(dataset_dir / 'parents.npy')
     images_path = str(dataset_dir / 'images.npy')
@@ -107,7 +107,7 @@ def load_cached_dataset(dataset_dir: Path, dataset: tf.data.Dataset, mechanisms:
         parents = np.load(parents_path, allow_pickle=True).item()
     except FileNotFoundError:
         print('Dataset not found, creating new copy...')
-        images, parents = apply_mechanisms_to_dataset(dataset, mechanisms, parent_dims)
+        images, parents = apply_confounding_fns_to_dataset(dataset, confounding_fns, parent_dims)
         dataset_dir.mkdir(exist_ok=True, parents=True)
         np.save(images_path, images)
         np.save(parents_path, parents)

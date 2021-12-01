@@ -55,7 +55,7 @@ def run_experiment(job_dir: Path,
                    classifier_optimizer: Optimizer,
                    classifier_batch_size: int,
                    classifier_num_steps: int,
-                   # Mechanism
+                   # ConfoundingFn
                    critic_layers: Iterable[StaxLayer],
                    abductor_layers: Iterable[StaxLayer],
                    mechanism_constructor: Callable[[int, int], Tuple[InitFn, MechanismFn]],

@@ -11,10 +11,10 @@ from skimage import draw, morphology, transform
 from components.stax_extension import Shape
 from datasets.morphomnist import skeleton
 from datasets.morphomnist.morpho import ImageMorphology
-from datasets.utils import IMAGE, Mechanism, get_marginal_datasets, image_gallery, load_cached_dataset
+from datasets.utils import IMAGE, ConfoundingFn, get_marginal_datasets, image_gallery, load_cached_dataset
 
 
-def function_dict_to_mechanism(function_dict: Dict[int, Callable[[IMAGE], IMAGE]], cm: NDArray[np.float_]) -> Mechanism:
+def function_dict_to_confounding_fn(function_dict: Dict[int, Callable[[IMAGE], IMAGE]], cm: NDArray[np.float_]) -> ConfoundingFn:
     def apply_fn(image: IMAGE, confounder: int) -> Tuple[IMAGE, int]:
         idx = np.random.choice(cm.shape[1], p=cm[confounder])
         return function_dict[idx](image), idx
@@ -98,7 +98,7 @@ def get_fracture_fn(thickness: float = 1.5, prune: float = 2, num_frac: int = 3)
     return fracture
 
 
-def get_colorize_fn(cm: NDArray[np.float_]) -> Mechanism:
+def get_colorize_fn(cm: NDArray[np.float_]) -> ConfoundingFn:
     colors = tf.constant(((1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1),
                           (0, 1, 1), (1, 1, 1), (.5, 0, 0), (0, .5, 0), (0, 0, .5)))
 
@@ -146,8 +146,8 @@ def show_images(dataset: tf.data.Dataset, title: str) -> None:
 
 
 def create_confounded_mnist_dataset(data_dir: str,
-                                    train_mechanisms: List[Mechanism],
-                                    test_mechanisms: List[Mechanism],
+                                    train_confounding_fns: List[ConfoundingFn],
+                                    test_confounding_fns: List[ConfoundingFn],
                                     parent_dims: Dict[str, int]) \
         -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, NDArray], Shape]:
     tf.config.experimental.set_visible_devices([], 'GPU')
@@ -156,10 +156,10 @@ def create_confounded_mnist_dataset(data_dir: str,
 
     encode_fn = get_encode_fn(parent_dims)
     dataset_dir = Path(f'{data_dir}/confounded_mnist')
-    train_data, train_parents = load_cached_dataset(dataset_dir / 'train', ds_train, train_mechanisms, parent_dims)
+    train_data, train_parents = load_cached_dataset(dataset_dir / 'train', ds_train, train_confounding_fns, parent_dims)
     train_data = train_data.map(encode_fn)
 
-    test_data, _ = load_cached_dataset(dataset_dir / 'test', ds_test, test_mechanisms, parent_dims)
+    test_data, _ = load_cached_dataset(dataset_dir / 'test', ds_test, test_confounding_fns, parent_dims)
     test_data = test_data.map(encode_fn).shuffle(buffer_size=1000)
     # Get unconfounded datasets by looking at the parents
     train_data, marginals = get_marginal_datasets(train_data, train_parents, parent_dims)

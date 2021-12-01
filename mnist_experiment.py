@@ -5,14 +5,14 @@ from typing import Any, Dict, List, Tuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.experimental import optimizers
 from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh, serial
 
 from components import Array, KeyArray, Params, PixelNorm2D, Reshape, Shape, StaxLayer
-from datasets.confounded_mnist import create_confounded_mnist_dataset, function_dict_to_mechanism, get_colorize_fn, \
-    get_thickening_fn, get_thinning_fn
-from datasets.utils import Mechanism, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
+from datasets.confounded_mnist import create_confounded_mnist_dataset, function_dict_to_confounding_fn, \
+    get_colorize_fn, get_thickening_fn, get_thinning_fn
+from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
 from run_experiment import run_experiment
-from jax.experimental import optimizers
 
 
 def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int]):
@@ -58,7 +58,7 @@ def mechanism(parent_dim: int, noise_dim: int) -> StaxLayer:
     return init_fn, apply_fn
 
 
-def experiment_0(control: bool = False) -> Tuple[List[Mechanism], List[Mechanism], Dict[str, int]]:
+def experiment_0(control: bool = False) -> Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int]]:
     parent_dims = {'digit': 10, 'color': 10}
     test_colorize_cm = get_uniform_confusion_matrix(10, 10)
     train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if not control else test_colorize_cm
@@ -68,7 +68,7 @@ def experiment_0(control: bool = False) -> Tuple[List[Mechanism], List[Mechanism
 
 
 # Even digits have much higher chance of swelling
-def experiment_1(control: bool = False) -> Tuple[List[Mechanism], List[Mechanism], Dict[str, int]]:
+def experiment_1(control: bool = False) -> Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int]]:
     parent_dims = {'digit': 10, 'thickness': 2, 'color': 10}
 
     even_heavy_cm = np.zeros(shape=(10, 2))
@@ -81,8 +81,8 @@ def experiment_1(control: bool = False) -> Tuple[List[Mechanism], List[Mechanism
     train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if not control else test_colorize_cm
 
     function_dict = {0: get_thinning_fn(), 1: get_thickening_fn()}
-    train_thickening_fn = function_dict_to_mechanism(function_dict, train_thickening_cm)
-    test_thickening_fn = function_dict_to_mechanism(function_dict, test_thickening_cm)
+    train_thickening_fn = function_dict_to_confounding_fn(function_dict, train_thickening_cm)
+    test_thickening_fn = function_dict_to_confounding_fn(function_dict, test_thickening_cm)
     train_colorize_fn = get_colorize_fn(train_colorize_cm)
     test_colorize_fn = get_colorize_fn(test_colorize_cm)
 
@@ -108,9 +108,9 @@ if __name__ == '__main__':
     for control in [True, False]:
         for i, experiment in enumerate([experiment_0, experiment_1]):
             job_dir = args.job_dir / f'exp_{i:d}' + ('_control' if control else '')
-            train_mechanisms, test_mechanisms, parent_dims = experiment(control)
+            train_confounding_fns, test_confounding_fns, parent_dims = experiment(control)
             train_datasets, test_dataset, marginals, input_shape = \
-                create_confounded_mnist_dataset('./data', train_mechanisms, test_mechanisms, parent_dims)
+                create_confounded_mnist_dataset('./data', train_confounding_fns, test_confounding_fns, parent_dims)
             run_experiment(job_dir=job_dir,
                            seed=1,
                            train_datasets=train_datasets,
