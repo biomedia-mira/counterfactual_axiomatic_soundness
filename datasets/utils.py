@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 IMAGE = NDArray[np.uint8]
 Mechanism = Callable[[IMAGE, int], Tuple[IMAGE, int]]
-
+confounding = 1
 
 def image_gallery(array: np.ndarray, ncols: int = 16, num_images_to_display: int = 128) -> np.ndarray:
     array = np.clip(array, a_min=0, a_max=255) / 255.

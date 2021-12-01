@@ -5,6 +5,7 @@ import numpy as np
 from jax.experimental.optimizers import OptimizerState, Params, ParamsFn
 from jax.random import KeyArray
 
+from components.f_gan import f_gan
 from components.stax_extension import layer_norm, reshape
 
 Array = Union[jnp.ndarray, np.ndarray, Any]
@@ -36,4 +37,5 @@ __all__ = [Array,
            Reshape,
            LayerNorm2D,
            LayerNorm1D,
-           PixelNorm2D]
+           PixelNorm2D,
+           f_gan]

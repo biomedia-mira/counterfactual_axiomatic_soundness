@@ -7,17 +7,16 @@ from jax.experimental import optimizers
 from jax.experimental.optimizers import OptimizerState, ParamsFn
 from jax.lax import stop_gradient
 
-from components import Array, InitFn, Model, KeyArray, Params, Shape, UpdateFn
-from components.f_gan import f_gan
+from components import Array, InitFn, KeyArray, Model, Params, Shape, UpdateFn, f_gan
 
-# [[[image, parents]], score]
-ClassifierFn = Callable[[Tuple[Array, Array]], Array]
-# [[params, [image, parents]], score]
-Critic = Tuple[InitFn, Callable[[Params, Tuple[Array, Array]], Array]]
+# [[[image, parents]], [score, output]]
+ClassifierFn = Callable[[Tuple[Array, Array]], Tuple[Array, Any]]
+# [[params, [image, parents]], [score, output]]
+CriticFn = Callable[[Params, Tuple[Array, Array]], Tuple[Array, Any]]
 # [[params, image, parent, do_parent, do_noise], do_image]
-Mechanism = Tuple[InitFn, Callable[[Params, Array, Array, Array, Array], Array]]
-#
-Abductor = Tuple[InitFn, Callable[[Params, Array], Array]]
+MechanismFn = Callable[[Params, Array, Array, Array, Array], Array]
+# [[params, [image, parents]], noise]
+AbductorFn = Callable[[Params, Tuple[Array, Array]], Array]
 
 
 def l2(x: Array) -> Array:
@@ -28,9 +27,9 @@ def functional_counterfactual(source_dist: FrozenSet[str],
                               do_parent_name: str,
                               marginal_dist: Array,
                               classifiers: Dict[str, ClassifierFn],
-                              critic: Critic,
-                              mechanism: Mechanism,
-                              abductor: Abductor) -> Model:
+                              critic: Tuple[InitFn, CriticFn],
+                              mechanism: Tuple[InitFn, MechanismFn],
+                              abductor: Tuple[InitFn, AbductorFn]) -> Model:
     target_dist = source_dist.union((do_parent_name,))
     divergence_init_fn, divergence_apply_fn = f_gan(critic, mode='gan', trick_g=True)
     mechanisms_init_fn, mechanism_apply_fn = mechanism

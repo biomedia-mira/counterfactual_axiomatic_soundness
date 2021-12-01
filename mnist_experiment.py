@@ -10,8 +10,9 @@ from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu
 from components import Array, KeyArray, Params, PixelNorm2D, Reshape, Shape, StaxLayer
 from datasets.confounded_mnist import create_confounded_mnist_dataset, function_dict_to_mechanism, get_colorize_fn, \
     get_thickening_fn, get_thinning_fn
-from datasets.utils import get_diagonal_confusion_matrix, get_uniform_confusion_matrix
-from models import Mechanism
+from datasets.utils import Mechanism, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
+from run_experiment import run_experiment
+from jax.experimental import optimizers
 
 
 def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int]):
@@ -88,18 +89,6 @@ def experiment_1(control: bool = False) -> Tuple[List[Mechanism], List[Mechanism
     return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims
 
 
-def a(job_dir, train_mechanisms, test_mechanisms, parent_dims, overwrite, seed) -> None:
-    train_datasets, test_dataset, marginals, input_shape = \
-        create_confounded_mnist_dataset('./data', train_mechanisms, test_mechanisms, parent_dims)
-
-    noise_dim = 64
-    classifier_layers = layers
-
-    critic_layers = layers
-    abductor_layers = (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-                       Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu)
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--job-dir', dest='job_dir', type=Path, help='job-dir where logs and models are saved')
@@ -122,4 +111,21 @@ if __name__ == '__main__':
             train_mechanisms, test_mechanisms, parent_dims = experiment(control)
             train_datasets, test_dataset, marginals, input_shape = \
                 create_confounded_mnist_dataset('./data', train_mechanisms, test_mechanisms, parent_dims)
-
+            run_experiment(job_dir=job_dir,
+                           seed=1,
+                           train_datasets=train_datasets,
+                           test_dataset=test_dataset,
+                           parent_dims=parent_dims,
+                           marginals=marginals,
+                           input_shape=input_shape,
+                           classifier_layers=classifier_layers,
+                           classifier_optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
+                           classifier_batch_size=1024,
+                           classifier_num_steps=2000,
+                           critic_layers=critic_layers,
+                           abductor_layers=abductor_layers,
+                           mechanism_constructor=mechanism,
+                           noise_dim=noise_dim,
+                           counterfactual_batch_size=512,
+                           counterfactual_num_steps=5000,
+                           overwrite=args.overwrite)

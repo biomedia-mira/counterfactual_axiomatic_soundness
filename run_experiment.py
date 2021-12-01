@@ -10,8 +10,8 @@ from jax.experimental.optimizers import Optimizer
 from jax.experimental.stax import Dense, Flatten, serial
 from numpy.typing import NDArray
 
-from components import Array, KeyArray, Params, Shape, StaxLayer
-from models import Mechanism, classifier, functional_counterfactual
+from components import Array, InitFn, KeyArray, Params, Shape, StaxLayer
+from models import MechanismFn, classifier, functional_counterfactual
 from trainer import train
 
 
@@ -58,7 +58,7 @@ def run_experiment(job_dir: Path,
                    # Mechanism
                    critic_layers: Iterable[StaxLayer],
                    abductor_layers: Iterable[StaxLayer],
-                   mechanism_constructor: Callable[[int, int], Mechanism],
+                   mechanism_constructor: Callable[[int, int], Tuple[InitFn, MechanismFn]],
                    noise_dim: int,
                    counterfactual_batch_size: int,
                    counterfactual_num_steps: int,
@@ -119,7 +119,7 @@ def run_experiment(job_dir: Path,
                            log_every=1,
                            eval_every=250,
                            save_every=250)
-        mechanisms_compiled[parent_name] = compile_fn(fn=mechanism, params=params[1])
+        mechanisms_compiled[parent_name] = compile_fn(fn=mechanism[1], params=params[1])
 
     # Test
     # repeat_test = {p_name + '_repeat': repeat_transform_test(mechanism, p_name, noise_dim, n_repeats=10)
