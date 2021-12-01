@@ -2,14 +2,14 @@ from typing import Any, Callable, Dict, Iterable, Tuple
 
 import jax.numpy as jnp
 from jax import jit, value_and_grad
-from jax.experimental import optimizers, stax
-from jax.experimental.optimizers import OptimizerState
+from jax.experimental import stax
+from jax.experimental.optimizers import Optimizer, OptimizerState
 from jax.experimental.stax import Dense, Flatten, LogSoftmax
 
-from components import Array, Model, KeyArray, Params, StaxLayer, UpdateFn
+from components import Array, KeyArray, Model, Params, StaxLayer, UpdateFn
 
 
-def classifier(num_classes: int, layers: Iterable[StaxLayer]) -> Model:
+def classifier(num_classes: int, layers: Iterable[StaxLayer], optimizer: Optimizer) -> Model:
     init_fn, classify_fn = stax.serial(*layers, Flatten, Dense(num_classes), LogSoftmax)
 
     def apply_fn(params: Params, inputs: Any, **kwargs: Any) -> Tuple[Array, Dict[str, Array]]:
@@ -20,7 +20,7 @@ def classifier(num_classes: int, layers: Iterable[StaxLayer]) -> Model:
         return jnp.mean(cross_entropy), {'cross_entropy': cross_entropy, 'accuracy': accuracy}
 
     def init_optimizer_fn(params: Params) -> Tuple[OptimizerState, UpdateFn, Callable[[OptimizerState], Callable]]:
-        opt_init, opt_update, get_params = optimizers.adam(step_size=5e-4, b1=0.9)
+        opt_init, opt_update, get_params = optimizer
 
         @jit
         def update(i: int, opt_state: OptimizerState, inputs: Any, rng: KeyArray) -> Tuple[OptimizerState, Array, Any]:

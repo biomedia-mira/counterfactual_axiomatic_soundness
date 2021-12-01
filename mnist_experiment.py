@@ -7,29 +7,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh, serial
 
-from components import Array, KeyArray, Params, PixelNorm2D, Reshape, StaxLayer
-from components.stax_extension import Shape
+from components import Array, KeyArray, Params, PixelNorm2D, Reshape, Shape, StaxLayer
 from datasets.confounded_mnist import create_confounded_mnist_dataset, function_dict_to_mechanism, get_colorize_fn, \
     get_thickening_fn, get_thinning_fn
-from datasets.utils import Mechanism, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
-from run_experiment import run_experiment
-
-
-def broadcast(array: Array, shape: Tuple[int, ...]) -> Array:
-    return jnp.broadcast_to(jnp.expand_dims(array, axis=tuple(range(1, 1 + len(shape) - array.ndim))), shape)
-
-
-def condition_on_parents(parent_dims: Dict[str, int]) -> StaxLayer:
-    def init_fn(rng: KeyArray, shape: Shape) -> Tuple[Shape, Params]:
-        return (*shape[:-1], shape[-1] + sum(parent_dims.values())), ()
-
-    def apply_fn(params: Params, inputs: Any, **kwargs: Any) -> Array:
-        image, parents = inputs
-        shape = (*image.shape[:-1], sum(parent_dims.values()))
-        _parents = jnp.concatenate([parents[key] for key in parent_dims.keys()], axis=-1)
-        return jnp.concatenate((image, broadcast(_parents, shape)), axis=-1)
-
-    return init_fn, apply_fn
+from datasets.utils import get_diagonal_confusion_matrix, get_uniform_confusion_matrix
+from models import Mechanism
 
 
 def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int]):
@@ -75,12 +57,6 @@ def mechanism(parent_dim: int, noise_dim: int) -> StaxLayer:
     return init_fn, apply_fn
 
 
-layers = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
-          ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
-          ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
-          Flatten, Dense(128), LeakyRelu)
-
-
 def experiment_0(control: bool = False) -> Tuple[List[Mechanism], List[Mechanism], Dict[str, int]]:
     parent_dims = {'digit': 10, 'color': 10}
     test_colorize_cm = get_uniform_confusion_matrix(10, 10)
@@ -112,37 +88,16 @@ def experiment_1(control: bool = False) -> Tuple[List[Mechanism], List[Mechanism
     return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims
 
 
-def a(job_dir, train_mechanisms, test_mechanisms, parent_dims, overwrite) -> None:
+def a(job_dir, train_mechanisms, test_mechanisms, parent_dims, overwrite, seed) -> None:
     train_datasets, test_dataset, marginals, input_shape = \
         create_confounded_mnist_dataset('./data', train_mechanisms, test_mechanisms, parent_dims)
 
     noise_dim = 64
     classifier_layers = layers
-    critic = serial(condition_on_parents(parent_dims), *layers, Flatten, Dense(1))
-    abductor = serial(condition_on_parents(parent_dims),
-                      Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-                      Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-                      Flatten, Dense(noise_dim))
-    mechanisms = {parent_name: mechanism(parent_dim, noise_dim)
-                  for parent_name, parent_dim in parent_dims.items()}
 
-    run_experiment(job_dir=job_dir,
-                   train_datasets=train_datasets,
-                   test_dataset=test_dataset,
-                   parent_dims=parent_dims,
-                   marginals=marginals,
-                   input_shape=input_shape,
-                   classifier_layers=classifier_layers,
-                   classifier_batch_size=1024,
-                   classifier_num_steps=2000,
-                   interventions=None,
-                   critic=critic,
-                   abductor=abductor,
-                   mechanisms=mechanisms,
-                   mechanism_batch_size=512,
-                   mechanism_num_steps=5000,
-                   seed=1,
-                   overwrite=overwrite)
+    critic_layers = layers
+    abductor_layers = (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+                       Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu)
 
 
 if __name__ == '__main__':
@@ -151,9 +106,20 @@ if __name__ == '__main__':
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
     args = parser.parse_args()
 
+    noise_dim = 64
+    layers = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
+              ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
+              ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
+              Flatten, Dense(128), LeakyRelu)
+    classifier_layers = layers
+    critic_layers = layers
+    abductor_layers = (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+                       Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu)
+
     for control in [True, False]:
         for i, experiment in enumerate([experiment_0, experiment_1]):
             job_dir = args.job_dir / f'exp_{i:d}' + ('_control' if control else '')
             train_mechanisms, test_mechanisms, parent_dims = experiment(control)
-            a(job_dir, train_mechanisms, test_mechanisms, parent_dims, args.overwrite)
+            train_datasets, test_dataset, marginals, input_shape = \
+                create_confounded_mnist_dataset('./data', train_mechanisms, test_mechanisms, parent_dims)
 
