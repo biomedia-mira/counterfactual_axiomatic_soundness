@@ -92,7 +92,8 @@ def run_experiment(job_dir: Path,
                            save_every=50)
         classifiers[parent_name] = compile_fn(fn=model[1], params=params)
 
-    mechanisms_compiled = {}
+    # Train mechanisms
+    mechanisms = {}
     for parent_name, parent_dim in parent_dims.items():
         source_dist, target_dist = frozenset(), frozenset((parent_name,))
         critic = serial(condition_on_parents(parent_dims), *critic_layers, Flatten, Dense(1))
@@ -119,7 +120,7 @@ def run_experiment(job_dir: Path,
                            log_every=1,
                            eval_every=250,
                            save_every=250)
-        mechanisms_compiled[parent_name] = compile_fn(fn=mechanism[1], params=params[1])
+        mechanisms[parent_name] = compile_fn(fn=mechanism[1], params=params[1])
 
     # Test
     # repeat_test = {p_name + '_repeat': repeat_transform_test(mechanism, p_name, noise_dim, n_repeats=10)
