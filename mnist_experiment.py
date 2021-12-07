@@ -6,11 +6,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import optimizers
-from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh, serial
+from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, serial, Tanh
 
 from components import Array, KeyArray, Params, PixelNorm2D, Reshape, Shape, StaxLayer
 from datasets.confounded_mnist import create_confounded_mnist_dataset, function_dict_to_confounding_fn, \
-    get_colorize_fn, get_thickening_fn, get_thinning_fn, get_fracture_fn
+    get_colorize_fn, get_fracture_fn, get_thickening_fn, get_thinning_fn
 from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
 from run_experiment import run_experiment
 
@@ -43,7 +43,7 @@ def mechanism(parent_dim: int, noise_dim: int) -> StaxLayer:
     return init_fn, apply_fn
 
 
-def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int]):
+def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int]) -> StaxLayer:
     _init_fn, _apply_fn = serial(Conv(out_features, filter_shape=(3, 3), strides=(1, 1), padding='SAME'),
                                  PixelNorm2D, LeakyRelu,
                                  Conv(out_features, filter_shape=filter_shape, strides=strides, padding='SAME'),
@@ -117,10 +117,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     noise_dim = 64
-    layers = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
-              ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
-              ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
-              Flatten, Dense(128), LeakyRelu)
+    layers: Tuple[StaxLayer, ...] = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
+                                     ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
+                                     ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
+                                     Flatten, Dense(128), LeakyRelu)
     classifier_layers = layers
     critic_layers = layers
     abductor_layers = (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
