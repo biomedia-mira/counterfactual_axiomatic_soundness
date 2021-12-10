@@ -1,12 +1,14 @@
 import argparse
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import jax
 import jax.numpy as jnp
+import matplotlib
 import numpy as np
 from jax.experimental import optimizers
-from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, serial, Tanh
+from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh, serial
 
 from components import Array, KeyArray, Params, Shape, StaxLayer
 from components.stax_extension import PixelNorm2D, Reshape
@@ -14,6 +16,8 @@ from datasets.confounded_mnist import create_confounded_mnist_dataset, function_
     get_colorize_fn, get_fracture_fn, get_thickening_fn, get_thinning_fn
 from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
 from run_experiment import run_experiment
+
+matplotlib.use('tkagg')
 
 
 def mechanism(parent_dim: int, noise_dim: int) -> StaxLayer:
@@ -117,7 +121,7 @@ if __name__ == '__main__':
     parser.add_argument('--data-dir', dest='data_dir', type=Path, help='data-dir where files will be saved')
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
     args = parser.parse_args()
-
+    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
     noise_dim = 64
     layers: Tuple[StaxLayer, ...] = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
                                      ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
