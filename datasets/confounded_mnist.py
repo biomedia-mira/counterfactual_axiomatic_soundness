@@ -11,10 +11,13 @@ from skimage import draw, morphology, transform
 from components.stax_extension import Shape
 from datasets.morphomnist import skeleton
 from datasets.morphomnist.morpho import ImageMorphology
-from datasets.utils import IMAGE, ConfoundingFn, get_marginal_datasets, image_gallery, load_cached_dataset
+from datasets.utils import ConfoundingFn, get_marginal_datasets, IMAGE, image_gallery, load_cached_dataset
+
+tf.config.experimental.set_visible_devices([], 'GPU')
 
 
-def function_dict_to_confounding_fn(function_dict: Dict[int, Callable[[IMAGE], IMAGE]], cm: NDArray[np.float_]) -> ConfoundingFn:
+def function_dict_to_confounding_fn(function_dict: Dict[int, Callable[[IMAGE], IMAGE]],
+                                    cm: NDArray[np.float_]) -> ConfoundingFn:
     def apply_fn(image: IMAGE, confounder: int) -> Tuple[IMAGE, int]:
         idx = np.random.choice(cm.shape[1], p=cm[confounder])
         return function_dict[idx](image), idx
@@ -150,9 +153,9 @@ def create_confounded_mnist_dataset(data_dir: str,
                                     test_confounding_fns: List[ConfoundingFn],
                                     parent_dims: Dict[str, int]) \
         -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, NDArray], Shape]:
-    tf.config.experimental.set_visible_devices([], 'GPU')
     input_shape = (-1, 28, 28, 3)
-    ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False, data_dir=f'{data_dir}/mnist')
+    ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False, data_dir=f'{data_dir}/mnist',
+                                  as_supervised=True)
 
     encode_fn = get_encode_fn(parent_dims)
     dataset_dir = Path(f'{data_dir}/confounded_mnist')

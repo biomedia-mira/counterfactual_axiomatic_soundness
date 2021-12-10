@@ -3,11 +3,11 @@ from typing import Any, Callable, Dict, FrozenSet, Tuple
 import jax
 import jax.numpy as jnp
 from jax import jit, random, value_and_grad
-from jax.experimental import optimizers
-from jax.experimental.optimizers import OptimizerState, ParamsFn, Optimizer
+from jax.experimental.optimizers import Optimizer, OptimizerState, ParamsFn
 from jax.lax import stop_gradient
 
-from components import Array, InitFn, KeyArray, Model, Params, Shape, UpdateFn, f_gan
+from components import Array, InitFn, KeyArray, Model, Params, Shape, UpdateFn
+from components.f_gan import f_gan
 
 # [[[image, parents]], [score, output]]
 ClassifierFn = Callable[[Tuple[Array, Array]], Tuple[Array, Any]]

@@ -8,7 +8,8 @@ import numpy as np
 from jax.experimental import optimizers
 from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, serial, Tanh
 
-from components import Array, KeyArray, Params, PixelNorm2D, Reshape, Shape, StaxLayer
+from components import Array, KeyArray, Params, Shape, StaxLayer
+from components.stax_extension import PixelNorm2D, Reshape
 from datasets.confounded_mnist import create_confounded_mnist_dataset, function_dict_to_confounding_fn, \
     get_colorize_fn, get_fracture_fn, get_thickening_fn, get_thinning_fn
 from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
@@ -113,6 +114,7 @@ def experiment_2(control: bool = False) -> Tuple[List[ConfoundingFn], List[Confo
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--job-dir', dest='job_dir', type=Path, help='job-dir where logs and models are saved')
+    parser.add_argument('--data-dir', dest='data_dir', type=Path, help='data-dir where files will be saved')
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
     args = parser.parse_args()
 
@@ -128,10 +130,12 @@ if __name__ == '__main__':
 
     for control in [True, False]:
         for i, experiment in enumerate([experiment_0, experiment_1, experiment_2]):
-            job_dir = args.job_dir / f'exp_{i:d}' + ('_control' if control else '')
+            job_name = f'exp_{i:d}' + ('_control' if control else '')
+            job_dir = args.job_dir / job_name
             train_confounding_fns, test_confounding_fns, parent_dims = experiment(control)
             train_datasets, test_dataset, marginals, input_shape = \
-                create_confounded_mnist_dataset('./data', train_confounding_fns, test_confounding_fns, parent_dims)
+                create_confounded_mnist_dataset(str(args.data_dir / job_name), train_confounding_fns,
+                                                test_confounding_fns, parent_dims)
 
             schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[5e-4, 5e-4 / 2, 5e-4 / 8])
             counterfactual_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
