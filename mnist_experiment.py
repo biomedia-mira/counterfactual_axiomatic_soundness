@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Tuple
 import jax
 import jax.numpy as jnp
 import matplotlib
+matplotlib.use('tkagg')
 import numpy as np
 from jax.experimental import optimizers
 from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh, serial
@@ -17,7 +18,7 @@ from datasets.confounded_mnist import create_confounded_mnist_dataset, function_
 from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
 from run_experiment import run_experiment
 
-matplotlib.use('tkagg')
+
 
 
 def mechanism(parent_dim: int, noise_dim: int) -> StaxLayer:
