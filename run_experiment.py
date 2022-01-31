@@ -8,10 +8,11 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 from jax.experimental.optimizers import Optimizer
 from jax.experimental.stax import Dense, Flatten, serial
-from numpy.typing import NDArray
 
 from components import Array, InitFn, KeyArray, Params, Shape, StaxLayer
-from models import MechanismFn, classifier, functional_counterfactual
+from components.f_gan import f_gan
+from datasets.utils import Distribution
+from models import classifier, functional_counterfactual, MechanismFn
 from trainer import train
 
 
@@ -47,8 +48,8 @@ def run_experiment(job_dir: Path,
                    seed: int,
                    train_datasets: Dict[FrozenSet[str], tf.data.Dataset],
                    test_dataset: tf.data.Dataset,
-                   parent_dims: Dict[str, int],
-                   marginals: Dict[str, NDArray],
+                   parent_marginals: Dict[str, Distribution],
+                   invertible: Dict[str, bool],
                    input_shape: Shape,
                    # Classifier
                    classifier_layers: Iterable[StaxLayer],
@@ -57,22 +58,20 @@ def run_experiment(job_dir: Path,
                    classifier_num_steps: int,
                    # ConfoundingFn
                    critic_layers: Iterable[StaxLayer],
-                   abductor_layers: Iterable[StaxLayer],
-                   mechanism_constructor: Callable[[int, int], Tuple[InitFn, MechanismFn]],
-                   noise_dim: int,
+                   mechanism_constructor: Callable[[int], Tuple[InitFn, MechanismFn]],
                    counterfactual_optimizer: Optimizer,
                    counterfactual_batch_size: int,
                    counterfactual_num_steps: int,
                    # Misc
                    overwrite: bool = False
-                   ):
+                   ) -> None:
     job_dir = Path(job_dir)
     if job_dir.exists() and overwrite:
         shutil.rmtree(job_dir)
     # Train classifiers
     classifiers = {}
-    for parent_name, parent_dim in parent_dims.items():
-        model = classifier(parent_dim, classifier_layers, classifier_optimizer)
+    for parent_name, parent_dist in parent_marginals.items():
+        model = classifier(parent_dist.dim, classifier_layers, classifier_optimizer)
         model_path = job_dir / parent_name / 'model.npy'
         if model_path.exists():
             params = np.load(str(model_path), allow_pickle=True)
@@ -94,15 +93,17 @@ def run_experiment(job_dir: Path,
         classifiers[parent_name] = compile_fn(fn=model[1], params=params)
 
     # Train mechanisms
-    mechanisms, divergences, abductors = {}, {}, {}
+    mechanisms, divergences = {}, {}
 
-    for parent_name, parent_dim in parent_dims.items():
+    for parent_name, parent_dist in parent_marginals.items():
         source_dist, target_dist = frozenset(), frozenset((parent_name,))
+        parent_dims = {key: value.dim for key, value in parent_marginals.items()}
         critic = serial(condition_on_parents(parent_dims), *critic_layers, Flatten, Dense(1))
-        abductor = serial(condition_on_parents(parent_dims), *abductor_layers, Flatten, Dense(noise_dim))
-        mechanism = mechanism_constructor(parent_dim, noise_dim)
-        model = functional_counterfactual(source_dist, parent_name, marginals[parent_name],
-                                          classifiers, critic, mechanism, abductor, counterfactual_optimizer)
+
+        divergence = f_gan(critic, mode='gan', trick_g=True)
+        mechanism = mechanism_constructor(parent_dist.dim)
+        model = functional_counterfactual(source_dist, parent_name, parent_marginals[parent_name],
+                                          classifiers, divergence, mechanism, counterfactual_optimizer)
         model_path = job_dir / f'do_{parent_name}' / 'model.npy'
         if model_path.exists():
             params = np.load(str(model_path), allow_pickle=True)
@@ -124,7 +125,6 @@ def run_experiment(job_dir: Path,
                            save_every=250)
         divergences[parent_name] = compile_fn(fn=critic[1], params=params[0])
         mechanisms[parent_name] = compile_fn(fn=mechanism[1], params=params[1])
-        abductors[parent_name] = compile_fn(fn=abductor[1], params=params[2])
 
     # Test
     # repeat_test = {p_name + '_repeat': repeat_transform_test(mechanism, p_name, noise_dim, n_repeats=10)

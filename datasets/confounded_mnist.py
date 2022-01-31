@@ -11,7 +11,7 @@ from skimage import draw, morphology, transform
 from components.stax_extension import Shape
 from datasets.morphomnist import skeleton
 from datasets.morphomnist.morpho import ImageMorphology
-from datasets.utils import ConfoundingFn, get_marginal_datasets, IMAGE, image_gallery, load_cached_dataset
+from datasets.utils import ConfoundingFn, get_marginal_datasets, IMAGE, image_gallery, load_cached_dataset, Distribution
 
 tf.config.experimental.set_visible_devices([], 'GPU')
 
@@ -152,7 +152,7 @@ def create_confounded_mnist_dataset(data_dir: str,
                                     train_confounding_fns: List[ConfoundingFn],
                                     test_confounding_fns: List[ConfoundingFn],
                                     parent_dims: Dict[str, int]) \
-        -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, NDArray], Shape]:
+        -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, Distribution], Shape]:
     input_shape = (-1, 28, 28, 3)
     ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False, data_dir=f'{data_dir}/mnist',
                                   as_supervised=True)

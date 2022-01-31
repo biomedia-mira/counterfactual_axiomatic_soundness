@@ -42,6 +42,7 @@ def reshape(output_shape: Shape) -> StaxLayer:
 
     return init_fun, apply_fun
 
+
 Reshape = reshape
 LayerNorm2D = layer_norm(axis=(1, 2, 3))
 LayerNorm1D = layer_norm(axis=(1,))

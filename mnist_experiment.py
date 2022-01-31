@@ -5,10 +5,10 @@ from typing import Any, Dict, List, Tuple
 
 import jax
 import jax.numpy as jnp
-import matplotlib
+# matplotlib.use('tkagg')
 import numpy as np
 from jax.experimental import optimizers
-from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh, serial
+from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, serial, Tanh
 
 from components import Array, KeyArray, Params, Shape, StaxLayer
 from components.stax_extension import PixelNorm2D, Reshape
@@ -17,10 +17,10 @@ from datasets.confounded_mnist import create_confounded_mnist_dataset, function_
 from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
 from run_experiment import run_experiment
 
-matplotlib.use('tkagg')
+Experiment = Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int], Dict[str, bool]]
 
 
-def mechanism(parent_dim: int, noise_dim: int) -> StaxLayer:
+def mechanism(parent_dim: int) -> StaxLayer:
     hidden_dim = 1024
     enc_init_fn, enc_apply_fn = \
         serial(Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
@@ -33,16 +33,14 @@ def mechanism(parent_dim: int, noise_dim: int) -> StaxLayer:
                ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
                Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Tanh)
 
-    extra_dim = 2 * parent_dim + noise_dim
-
     def init_fn(rng: KeyArray, input_shape: Shape) -> Tuple[Shape, Params]:
         enc_output_shape, enc_params = enc_init_fn(rng, input_shape)
-        output_shape, dec_params = dec_init_fn(rng, (*enc_output_shape[:-1], enc_output_shape[-1] + extra_dim))
+        output_shape, dec_params = dec_init_fn(rng, (*enc_output_shape[:-1], enc_output_shape[-1] + 2 * parent_dim))
         return output_shape, (enc_params, dec_params)
 
-    def apply_fn(params: Params, inputs: Array, parent: Array, do_parent: Array, exogenous_noise: Array) -> Array:
+    def apply_fn(params: Params, inputs: Array, parent: Array, do_parent: Array) -> Array:
         enc_params, dec_params = params
-        latent_code = jnp.concatenate([exogenous_noise, enc_apply_fn(enc_params, inputs), parent, do_parent], axis=-1)
+        latent_code = jnp.concatenate([enc_apply_fn(enc_params, inputs), parent, do_parent], axis=-1)
         return dec_apply_fn(dec_params, latent_code)
 
     return init_fn, apply_fn
@@ -63,18 +61,20 @@ def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[in
     return _init_fn, apply_fn
 
 
-def experiment_0(control: bool = False) -> Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int]]:
+def experiment_0(control: bool = False) -> Experiment:
     parent_dims = {'digit': 10, 'color': 10}
+    invertible = {'digit': False, 'color': True}
     test_colorize_cm = get_uniform_confusion_matrix(10, 10)
     train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if not control else test_colorize_cm
     train_colorize_fn = get_colorize_fn(train_colorize_cm)
     test_colorize_fn = get_colorize_fn(test_colorize_cm)
-    return [train_colorize_fn], [test_colorize_fn], parent_dims
+    return [train_colorize_fn], [test_colorize_fn], parent_dims, invertible
 
 
 # Even digits have much higher chance of thick
-def experiment_1(control: bool = False) -> Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int]]:
+def experiment_1(control: bool = False) -> Experiment:
     parent_dims = {'digit': 10, 'thickness': 2, 'color': 10}
+    invertible = {'digit': False, 'thickness': True, 'color': True}
 
     even_heavy_cm = np.zeros(shape=(10, 2))
     even_heavy_cm[0:-1:2] = (.1, .9)
@@ -90,12 +90,12 @@ def experiment_1(control: bool = False) -> Tuple[List[ConfoundingFn], List[Confo
     test_thickening_fn = function_dict_to_confounding_fn(function_dict, test_thickening_cm)
     train_colorize_fn = get_colorize_fn(train_colorize_cm)
     test_colorize_fn = get_colorize_fn(test_colorize_cm)
+    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims, invertible
 
-    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims
 
-
-def experiment_2(control: bool = False) -> Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int]]:
-    parent_dims = {'digit': 10, 'thickness': 2, 'color': 10}
+def experiment_2(control: bool = False) -> Experiment:
+    parent_dims = {'digit': 10, 'fracture': 2, 'color': 10}
+    invertible = {'digit': False, 'fracture': False, 'color': True}
 
     even_heavy_cm = np.zeros(shape=(10, 2))
     even_heavy_cm[0:-1:2] = (.1, .9)
@@ -111,8 +111,7 @@ def experiment_2(control: bool = False) -> Tuple[List[ConfoundingFn], List[Confo
     test_thickening_fn = function_dict_to_confounding_fn(function_dict, test_thickening_cm)
     train_colorize_fn = get_colorize_fn(train_colorize_cm)
     test_colorize_fn = get_colorize_fn(test_colorize_cm)
-
-    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims
+    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims, invertible
 
 
 if __name__ == '__main__':
@@ -122,21 +121,18 @@ if __name__ == '__main__':
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
     args = parser.parse_args()
     os.environ['CUDA_VISIBLE_DEVICES'] = '1'
-    noise_dim = 64
     layers: Tuple[StaxLayer, ...] = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
                                      ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
                                      ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
                                      Flatten, Dense(128), LeakyRelu)
     classifier_layers = layers
     critic_layers = layers
-    abductor_layers = (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-                       Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu)
 
     for control in [True, False]:
         for i, experiment in enumerate([experiment_0, experiment_1, experiment_2]):
             job_name = f'exp_{i:d}' + ('_control' if control else '')
             job_dir = args.job_dir / job_name
-            train_confounding_fns, test_confounding_fns, parent_dims = experiment(control)
+            train_confounding_fns, test_confounding_fns, parent_dims, invertible = experiment(control)
             train_datasets, test_dataset, marginals, input_shape = \
                 create_confounded_mnist_dataset(str(args.data_dir / job_name), train_confounding_fns,
                                                 test_confounding_fns, parent_dims)
@@ -148,17 +144,15 @@ if __name__ == '__main__':
                            seed=1,
                            train_datasets=train_datasets,
                            test_dataset=test_dataset,
-                           parent_dims=parent_dims,
-                           marginals=marginals,
+                           parent_marginals=marginals,
+                           invertible=invertible,
                            input_shape=input_shape,
                            classifier_layers=classifier_layers,
                            classifier_optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
                            classifier_batch_size=1024,
                            classifier_num_steps=2000,
                            critic_layers=critic_layers,
-                           abductor_layers=abductor_layers,
                            mechanism_constructor=mechanism,
-                           noise_dim=noise_dim,
                            counterfactual_optimizer=counterfactual_optimizer,
                            counterfactual_batch_size=512,
                            counterfactual_num_steps=5000,

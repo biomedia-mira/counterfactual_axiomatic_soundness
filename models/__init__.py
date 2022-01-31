@@ -1,4 +1,4 @@
 from models.classifier import classifier
-from models.functional_counterfactual import AbductorFn, ClassifierFn, CriticFn, MechanismFn, functional_counterfactual
+from models.functional_counterfactual import ClassifierFn, DivergenceFn, functional_counterfactual, MechanismFn, SamplingFn
 
-__all__ = ['classifier', 'functional_counterfactual', 'ClassifierFn', 'CriticFn', 'AbductorFn', 'MechanismFn']
+__all__ = ['classifier', 'functional_counterfactual', 'ClassifierFn', 'DivergenceFn', 'MechanismFn', 'SamplingFn']

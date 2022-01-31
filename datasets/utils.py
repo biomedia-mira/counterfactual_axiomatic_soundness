@@ -1,4 +1,5 @@
 import itertools
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, List, Tuple
 
@@ -10,6 +11,13 @@ from tqdm import tqdm
 
 IMAGE = NDArray[np.uint8]
 ConfoundingFn = Callable[[IMAGE, int], Tuple[IMAGE, int]]
+
+
+@dataclass
+class Distribution:
+    dim: int
+    marginal: NDArray
+    continuous: bool = False
 
 
 def image_gallery(array: np.ndarray, ncols: int = 16, num_images_to_display: int = 128) -> np.ndarray:
@@ -68,7 +76,7 @@ def get_resample_fn(num_repeats: tf.Tensor, parent_dims: Dict[str, int]) \
 
 
 def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, np.ndarray], parent_dims: Dict[str, int]) \
-        -> Tuple[Dict[FrozenSet, tf.data.Dataset], Dict[str, np.ndarray]]:
+        -> Tuple[Dict[FrozenSet, tf.data.Dataset], Dict[str, Distribution]]:
     indicator = {key: [parents[key] == i for i in range(dim)] for key, dim in parent_dims.items()}
     index_map = np.array([np.logical_and.reduce(a) for a in itertools.product(*indicator.values())])
     index_map = index_map.reshape((*parent_dims.values(), -1))
@@ -93,7 +101,8 @@ def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, np.ndarra
                                                             reshuffle_each_iteration=True)
         datasets[frozenset(parent_set)] = unconfounded_dataset
         if len(parent_set) == 1:
-            marginals[parent_set[0]] = np.squeeze(marginal_dist)
+            parent_name = parent_set[0]
+            marginals[parent_name] = Distribution(parent_dims[parent_name], np.squeeze(marginal_dist))
 
     return datasets, marginals
 
