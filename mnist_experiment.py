@@ -1,21 +1,25 @@
 import argparse
 import os
+import shutil
+from itertools import product
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import jax
 import jax.numpy as jnp
-# matplotlib.use('tkagg')
 import numpy as np
+# matplotlib.use('tkagg')
 from jax.experimental import optimizers
-from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, serial, Tanh
+from jax.experimental.stax import Conv, ConvTranspose, LeakyRelu, Tanh
+from jax.experimental.stax import Dense, Flatten, serial
 
 from components import Array, KeyArray, Params, Shape, StaxLayer
 from components.stax_extension import PixelNorm2D, Reshape
 from datasets.confounded_mnist import create_confounded_mnist_dataset, function_dict_to_confounding_fn, \
     get_colorize_fn, get_fracture_fn, get_thickening_fn, get_thinning_fn
 from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
-from run_experiment import run_experiment
+from run_experiment import train_classifier, train_mechanism
+from models.functional_counterfactual import get_sampling_fn
 
 Experiment = Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int], Dict[str, bool]]
 
@@ -63,18 +67,18 @@ def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[in
 
 def experiment_0(control: bool = False) -> Experiment:
     parent_dims = {'digit': 10, 'color': 10}
-    invertible = {'digit': False, 'color': True}
+    is_invertible = {'digit': False, 'color': True}
     test_colorize_cm = get_uniform_confusion_matrix(10, 10)
     train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if not control else test_colorize_cm
     train_colorize_fn = get_colorize_fn(train_colorize_cm)
     test_colorize_fn = get_colorize_fn(test_colorize_cm)
-    return [train_colorize_fn], [test_colorize_fn], parent_dims, invertible
+    return [train_colorize_fn], [test_colorize_fn], parent_dims, is_invertible
 
 
 # Even digits have much higher chance of thick
 def experiment_1(control: bool = False) -> Experiment:
     parent_dims = {'digit': 10, 'thickness': 2, 'color': 10}
-    invertible = {'digit': False, 'thickness': True, 'color': True}
+    is_invertible = {'digit': False, 'thickness': True, 'color': True}
 
     even_heavy_cm = np.zeros(shape=(10, 2))
     even_heavy_cm[0:-1:2] = (.1, .9)
@@ -90,12 +94,12 @@ def experiment_1(control: bool = False) -> Experiment:
     test_thickening_fn = function_dict_to_confounding_fn(function_dict, test_thickening_cm)
     train_colorize_fn = get_colorize_fn(train_colorize_cm)
     test_colorize_fn = get_colorize_fn(test_colorize_cm)
-    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims, invertible
+    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims, is_invertible
 
 
 def experiment_2(control: bool = False) -> Experiment:
     parent_dims = {'digit': 10, 'fracture': 2, 'color': 10}
-    invertible = {'digit': False, 'fracture': False, 'color': True}
+    is_invertible = {'digit': False, 'fracture': False, 'color': True}
 
     even_heavy_cm = np.zeros(shape=(10, 2))
     even_heavy_cm[0:-1:2] = (.1, .9)
@@ -111,7 +115,7 @@ def experiment_2(control: bool = False) -> Experiment:
     test_thickening_fn = function_dict_to_confounding_fn(function_dict, test_thickening_cm)
     train_colorize_fn = get_colorize_fn(train_colorize_cm)
     test_colorize_fn = get_colorize_fn(test_colorize_cm)
-    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims, invertible
+    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims, is_invertible
 
 
 if __name__ == '__main__':
@@ -119,41 +123,69 @@ if __name__ == '__main__':
     parser.add_argument('--job-dir', dest='job_dir', type=Path, help='job-dir where logs and models are saved')
     parser.add_argument('--data-dir', dest='data_dir', type=Path, help='data-dir where files will be saved')
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
+    parser.add_argument('--seed', dest='seed', type=int, help='random seed')
     args = parser.parse_args()
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
+    experiments = {'exp_0': experiment_0, 'exp_1': experiment_1, 'exp_2': experiment_2}
+
     layers: Tuple[StaxLayer, ...] = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
                                      ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
                                      ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
                                      Flatten, Dense(128), LeakyRelu)
-    classifier_layers = layers
-    critic_layers = layers
 
-    for control in [True, False]:
-        for i, experiment in enumerate([experiment_0, experiment_1, experiment_2]):
-            job_name = f'exp_{i:d}' + ('_control' if control else '')
-            job_dir = args.job_dir / job_name
-            train_confounding_fns, test_confounding_fns, parent_dims, invertible = experiment(control)
-            train_datasets, test_dataset, marginals, input_shape = \
-                create_confounded_mnist_dataset(str(args.data_dir / job_name), train_confounding_fns,
-                                                test_confounding_fns, parent_dims)
+    schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[5e-4, 5e-4 / 2, 5e-4 / 8])
+    mechanism_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
 
-            schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[5e-4, 5e-4 / 2, 5e-4 / 8])
-            counterfactual_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
+    for exp_name, control in product(experiments, [True, False]):
+        job_name = exp_name + ('_control' if control else '')
+        job_dir = args.job_dir / job_name
+        job_dir = Path(job_dir)
+        if job_dir.exists() and args.overwrite:
+            shutil.rmtree(job_dir)
+        data_dir = str(args.data_dir / job_name)
 
-            run_experiment(job_dir=job_dir,
-                           seed=1,
-                           train_datasets=train_datasets,
-                           test_dataset=test_dataset,
-                           parent_marginals=marginals,
-                           invertible=invertible,
-                           input_shape=input_shape,
-                           classifier_layers=classifier_layers,
-                           classifier_optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
-                           classifier_batch_size=1024,
-                           classifier_num_steps=2000,
-                           critic_layers=critic_layers,
-                           mechanism_constructor=mechanism,
-                           counterfactual_optimizer=counterfactual_optimizer,
-                           counterfactual_batch_size=512,
-                           counterfactual_num_steps=5000,
-                           overwrite=args.overwrite)
+        train_confounding_fns, test_confounding_fns, parent_dims, is_invertible = experiments[exp_name](control)
+        train_datasets, test_dataset, marginals, input_shape = \
+            create_confounded_mnist_dataset(data_dir, train_confounding_fns, test_confounding_fns, parent_dims)
+
+        classifiers = {}
+        for parent_name, parent_dim in parent_dims.items():
+            classifiers[parent_name] = train_classifier(job_dir=job_dir,
+                                                        seed=args.seed,
+                                                        parent_name=parent_name,
+                                                        num_classes=parent_dim,
+                                                        layers=layers,
+                                                        train_datasets=train_datasets,
+                                                        test_dataset=test_dataset,
+                                                        input_shape=input_shape,
+                                                        optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
+                                                        batch_size=1024,
+                                                        num_steps=2000)
+        mechanisms = {}
+        for parent_name, parent_dim in parent_dims.items():
+            sampling_fn = get_sampling_fn(parent_dims[parent_name], False, marginals[parent_name])
+            mechanisms[parent_name] = train_mechanism(job_dir=job_dir,
+                                                      seed=args.seed,
+                                                      parent_name=parent_name,
+                                                      parent_dims=parent_dims,
+                                                      classifiers=classifiers,
+                                                      critic_layers=layers,
+                                                      mechanism=mechanism(parent_dim),
+                                                      sampling_fn=sampling_fn,
+                                                      is_invertible=is_invertible[parent_name],
+                                                      train_datasets=train_datasets,
+                                                      test_dataset=test_dataset,
+                                                      input_shape=input_shape,
+                                                      optimizer=mechanism_optimizer,
+                                                      batch_size=512,
+                                                      num_steps=5000)
+            # Test
+            # repeat_test = {p_name + '_repeat': repeat_transform_test(mechanism, p_name, noise_dim, n_repeats=10)
+            #                for p_name, mechanism in mechanisms.items()}
+            # cycle_test = {p_name + '_cycle': cycle_transform_test(mechanism, p_name, noise_dim, parent_dims[p_name])
+            #               for p_name, mechanism in mechanisms.items()}
+            # permute_test = {'permute': permute_transform_test({p_name: mechanisms[p_name]
+            #                                                    for p_name in ['color', 'thickness']}, parent_dims, noise_dim)}
+            # tests = {**repeat_test, **cycle_test, **permute_test}
+            # res = perform_tests(test_data, tests)

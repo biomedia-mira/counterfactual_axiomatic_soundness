@@ -3,45 +3,50 @@ from typing import Any, Callable, Dict, FrozenSet, Tuple
 import jax.numpy as jnp
 from jax import jit, random, tree_map, value_and_grad, vmap
 from jax.experimental.optimizers import Optimizer, OptimizerState, ParamsFn
+from numpy.typing import NDArray
 
 from components import Array, InitFn, KeyArray, Model, Params, Shape, UpdateFn
-from datasets.utils import Distribution
 
 # [[[image, parents]], [score, output]]
 ClassifierFn = Callable[[Tuple[Array, Array]], Tuple[Array, Any]]
 # [[params, [image, parents], [image, parents]], [div_loss, output]]
 DivergenceFn = Callable[[Params, Tuple[Array, Array], Tuple[Array, Array]], Tuple[Array, Any]]
-# [[params, image, parent, do_parent, do_noise], do_image]
+# [[params, image, parent, do_parent], do_image]
 MechanismFn = Callable[[Params, Array, Array, Array], Array]
-# [[rng, batch_size], [do_parent, order]]
+# [[rng, batch_size], Tuple[parent_sample, order]]
 SamplingFn = Callable[[KeyArray, int], Tuple[Array, Array]]
-
-
-def sampling_fn(parent_dist: Distribution, rng: KeyArray, batch_size: int) -> Tuple[Array, Array]:
-    parent_dim = parent_dist.dim
-    do_parent = random.choice(rng, parent_dim, shape=(batch_size,), p=parent_dist.marginal)
-    return jnp.eye(parent_dim)[do_parent], jnp.argsort(do_parent)
 
 
 def l2(x: Array) -> Array:
     return vmap(lambda arr: jnp.linalg.norm(jnp.ravel(arr), ord=2))(x)
 
 
+def get_sampling_fn(dim: int, is_continuous: bool, marginal_dist: NDArray) -> SamplingFn:
+    if is_continuous:
+        raise NotImplementedError
+
+    def sample_fn(rng: KeyArray, batch_size: int) -> Tuple[Array, Array]:
+        do_parent = random.choice(rng, dim, shape=(batch_size,), p=marginal_dist)
+        return jnp.eye(dim)[do_parent], jnp.argsort(do_parent)
+
+    return sample_fn
+
+
 def functional_counterfactual(source_dist: FrozenSet[str],
                               do_parent_name: str,
-                              parent_dist: Distribution,
                               classifiers: Dict[str, ClassifierFn],
                               f_divergence: Tuple[InitFn, DivergenceFn],
                               mechanism: Tuple[InitFn, MechanismFn],
-                              optimizer: Optimizer,
-                              invertible: bool = False) -> Model:
+                              sampling_fn: SamplingFn,
+                              is_invertible: bool,
+                              optimizer: Optimizer) -> Model:
     target_dist = source_dist.union((do_parent_name,))
     f_div_init_fn, f_div_apply_fn = f_divergence
-    mechanisms_init_fn, mechanism_apply_fn = mechanism
+    mechanism_init_fn, mechanism_apply_fn = mechanism
 
     def init_fn(rng: KeyArray, input_shape: Shape) -> Params:
         f_div_output_shape, f_div_params = f_div_init_fn(rng, input_shape)
-        mechanism_output_shape, mechanism_params = mechanisms_init_fn(rng, input_shape)
+        mechanism_output_shape, mechanism_params = mechanism_init_fn(rng, input_shape)
         return mechanism_output_shape, (f_div_params, mechanism_params)
 
     def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Tuple[Array, Any]:
@@ -50,7 +55,7 @@ def functional_counterfactual(source_dist: FrozenSet[str],
         parent = parents[do_parent_name]
 
         # sample new parent
-        do_parent, order = sampling_fn(parent_dist, rng, image.shape[0])
+        do_parent, order = sampling_fn(rng, image.shape[0])
         do_parents = {**parents, do_parent_name: do_parent}
 
         # functional counterfactual
@@ -67,14 +72,14 @@ def functional_counterfactual(source_dist: FrozenSet[str],
 
         # composition constraint
         image_same = mechanism_apply_fn(mechanism_params, image, parent, parent)
-        id_constraint = l2(image - image_same)
+        id_constraint = jnp.mean(l2(image - image_same))
         loss = loss + id_constraint
-        output.update({'image_same': image_same[order], 'id_constraint': id_constraint, })
+        output.update({'image_same': image_same[order], 'id_constraint': id_constraint})
 
         # reversibility constraint
-        if invertible:
+        if is_invertible:
             image_cycle = mechanism_apply_fn(mechanism_params, do_image, do_parent, parent)
-            cycle_constraint = l2(image - image_cycle)
+            cycle_constraint = jnp.mean(l2(image - image_cycle))
             loss = loss + cycle_constraint
             output.update({'image_cycle': image_cycle, 'cycle_constraint': cycle_constraint})
 
