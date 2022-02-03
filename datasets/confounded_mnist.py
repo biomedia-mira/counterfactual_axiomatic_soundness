@@ -13,8 +13,6 @@ from datasets.morphomnist import skeleton
 from datasets.morphomnist.morpho import ImageMorphology
 from datasets.utils import ConfoundingFn, get_marginal_datasets, IMAGE, image_gallery, load_cached_dataset
 
-tf.config.experimental.set_visible_devices([], 'GPU')
-
 
 def function_dict_to_confounding_fn(function_dict: Dict[int, Callable[[IMAGE], IMAGE]],
                                     cm: NDArray[np.float_]) -> ConfoundingFn:

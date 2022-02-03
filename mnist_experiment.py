@@ -8,7 +8,9 @@ from typing import Any, Dict, List, Tuple
 import jax
 import jax.numpy as jnp
 import numpy as np
-# matplotlib.use('tkagg')
+import tensorflow as tf
+import matplotlib
+matplotlib.use('tkagg')
 from jax.experimental import optimizers
 from jax.experimental.stax import Conv, ConvTranspose, LeakyRelu, Tanh
 from jax.experimental.stax import Dense, Flatten, serial
@@ -18,8 +20,10 @@ from components.stax_extension import PixelNorm2D, Reshape
 from datasets.confounded_mnist import create_confounded_mnist_dataset, function_dict_to_confounding_fn, \
     get_colorize_fn, get_fracture_fn, get_thickening_fn, get_thinning_fn
 from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
-from run_experiment import train_classifier, train_mechanism
 from models.functional_counterfactual import get_sampling_fn
+from run_experiment import train_classifier, train_mechanism
+
+tf.config.experimental.set_visible_devices([], 'GPU')
 
 Experiment = Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int], Dict[str, bool]]
 
