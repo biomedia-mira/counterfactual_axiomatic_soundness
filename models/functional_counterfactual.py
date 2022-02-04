@@ -14,7 +14,7 @@ DivergenceFn = Callable[[Params, Tuple[Array, Array], Tuple[Array, Array]], Tupl
 # [[params, image, parent, do_parent], do_image]
 MechanismFn = Callable[[Params, Array, Array, Array], Array]
 # [[rng, batch_size], Tuple[parent_sample, order]]
-SamplingFn = Callable[[KeyArray, int], Tuple[Array, Array]]
+SamplingFn = Callable[[KeyArray, Shape], Tuple[Array, Array]]
 
 
 def l2(x: Array) -> Array:
@@ -25,11 +25,11 @@ def get_sampling_fn(dim: int, is_continuous: bool, marginal_dist: NDArray) -> Sa
     if is_continuous:
         raise NotImplementedError
 
-    def sample_fn(rng: KeyArray, batch_size: int) -> Tuple[Array, Array]:
-        do_parent = random.choice(rng, dim, shape=(batch_size,), p=marginal_dist)
+    def sampling_fn(rng: KeyArray, sample_shape: Shape) -> Tuple[Array, Array]:
+        do_parent = random.choice(rng, dim, shape=sample_shape, p=marginal_dist)
         return jnp.eye(dim)[do_parent], jnp.argsort(do_parent)
 
-    return sample_fn
+    return sampling_fn
 
 
 def functional_counterfactual(source_dist: FrozenSet[str],
@@ -55,7 +55,7 @@ def functional_counterfactual(source_dist: FrozenSet[str],
         parent = parents[do_parent_name]
 
         # sample new parent
-        do_parent, order = sampling_fn(rng, image.shape[0])
+        do_parent, order = sampling_fn(rng, (image.shape[0],))
         do_parents = {**parents, do_parent_name: do_parent}
 
         # functional counterfactual

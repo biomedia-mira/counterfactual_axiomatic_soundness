@@ -9,8 +9,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
-import matplotlib
-matplotlib.use('tkagg')
 from jax.experimental import optimizers
 from jax.experimental.stax import Conv, ConvTranspose, LeakyRelu, Tanh
 from jax.experimental.stax import Dense, Flatten, serial
@@ -23,6 +21,8 @@ from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uni
 from models.functional_counterfactual import get_sampling_fn
 from run_experiment import train_classifier, train_mechanism
 
+# import matplotlib
+# matplotlib.use('tkagg')
 tf.config.experimental.set_visible_devices([], 'GPU')
 
 Experiment = Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int], Dict[str, bool]]
@@ -129,7 +129,6 @@ if __name__ == '__main__':
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
     parser.add_argument('--seed', dest='seed', type=int, help='random seed')
     args = parser.parse_args()
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
     experiments = {'exp_0': experiment_0, 'exp_1': experiment_1, 'exp_2': experiment_2}
 
