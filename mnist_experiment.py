@@ -1,5 +1,4 @@
 import argparse
-import os
 import shutil
 from itertools import product
 from pathlib import Path
@@ -10,8 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
 from jax.experimental import optimizers
-from jax.experimental.stax import Conv, ConvTranspose, LeakyRelu, Tanh
-from jax.experimental.stax import Dense, Flatten, serial
+from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh, serial
 
 from components import Array, KeyArray, Params, Shape, StaxLayer
 from components.stax_extension import PixelNorm2D, Reshape
@@ -20,6 +18,7 @@ from datasets.confounded_mnist import create_confounded_mnist_dataset, function_
 from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
 from models.functional_counterfactual import get_sampling_fn
 from run_experiment import train_classifier, train_mechanism
+from identifiability_tests import perform_tests, print_test_results
 
 # import matplotlib
 # matplotlib.use('tkagg')
@@ -166,8 +165,9 @@ if __name__ == '__main__':
                                                         batch_size=1024,
                                                         num_steps=2000)
         mechanisms = {}
+        sampling_fns = {parent_name: get_sampling_fn(parent_dims[parent_name], False, marginals[parent_name])
+                        for parent_name in parent_dims.keys()}
         for parent_name, parent_dim in parent_dims.items():
-            sampling_fn = get_sampling_fn(parent_dims[parent_name], False, marginals[parent_name])
             mechanisms[parent_name] = train_mechanism(job_dir=job_dir,
                                                       seed=args.seed,
                                                       parent_name=parent_name,
@@ -175,7 +175,7 @@ if __name__ == '__main__':
                                                       classifiers=classifiers,
                                                       critic_layers=layers,
                                                       mechanism=mechanism(parent_dim),
-                                                      sampling_fn=sampling_fn,
+                                                      sampling_fn=sampling_fns[parent_name],
                                                       is_invertible=is_invertible[parent_name],
                                                       train_datasets=train_datasets,
                                                       test_dataset=test_dataset,
@@ -183,12 +183,7 @@ if __name__ == '__main__':
                                                       optimizer=mechanism_optimizer,
                                                       batch_size=512,
                                                       num_steps=5000)
-            # Test
-            # repeat_test = {p_name + '_repeat': repeat_transform_test(mechanism, p_name, noise_dim, n_repeats=10)
-            #                for p_name, mechanism in mechanisms.items()}
-            # cycle_test = {p_name + '_cycle': cycle_transform_test(mechanism, p_name, noise_dim, parent_dims[p_name])
-            #               for p_name, mechanism in mechanisms.items()}
-            # permute_test = {'permute': permute_transform_test({p_name: mechanisms[p_name]
-            #                                                    for p_name in ['color', 'thickness']}, parent_dims, noise_dim)}
-            # tests = {**repeat_test, **cycle_test, **permute_test}
-            # res = perform_tests(test_data, tests)
+
+        # identifiability tests
+        test_results = perform_tests(mechanisms, is_invertible, sampling_fns, classifiers, test_dataset)
+        print_test_results([test_results])

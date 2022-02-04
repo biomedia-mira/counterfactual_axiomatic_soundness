@@ -1,5 +1,4 @@
-import itertools
-from typing import Any, Callable, Dict, Tuple, Optional
+from typing import Any, Callable, Dict, Optional, Tuple, Iterable
 
 import jax
 import jax.numpy as jnp
@@ -13,17 +12,16 @@ from models import ClassifierFn, SamplingFn
 
 Test = Callable[[KeyArray, Array, Dict[str, Array]], Tuple[Dict[str, NDArray], Optional[NDArray]]]
 DistanceMetric = Callable[[Array, Array], Array]
-# [[params, [image, parents], [image, parents]], [div_loss, output]]
-DivergenceFn = Callable[[Tuple[Array, Array], Tuple[Array, Array]], Tuple[Array, Any]]
-# [[params, image, parent, do_parent, do_noise], do_image]
-MechanismFn = Callable[[Array, Array, Array], Array]
+
+# [[image, parent, do_parent, do_noise], do_image]
+CompiledMechanismFn = Callable[[Array, Array, Array], Array]
 
 
 def l2(x1: Array, x2: Array) -> Array:
     return np.mean(np.power(x1 - x2, 2.), axis=(1, 2, 3))
 
 
-def effectiveness_test(mechanism_fn: MechanismFn,
+def effectiveness_test(mechanism_fn: CompiledMechanismFn,
                        parent_name: str,
                        sampling_fn: SamplingFn,
                        classifiers: Dict[str, ClassifierFn]) -> Test:
@@ -41,7 +39,7 @@ def effectiveness_test(mechanism_fn: MechanismFn,
     return test
 
 
-def composition_test(mechanism_fn: MechanismFn,
+def composition_test(mechanism_fn: CompiledMechanismFn,
                      parent_name: str,
                      distance_metric: DistanceMetric = l2,
                      horizon: int = 10) -> Test:
@@ -60,7 +58,7 @@ def composition_test(mechanism_fn: MechanismFn,
     return test
 
 
-def reversibility_test(mechanism_fn: MechanismFn,
+def reversibility_test(mechanism_fn: CompiledMechanismFn,
                        parent_name: str,
                        sampling_fn: SamplingFn,
                        distance_metric: DistanceMetric = l2,
@@ -98,36 +96,56 @@ def plot_image_sequence(image_seq: np.ndarray, title: str = '', n_cases: int = 1
     plt.show()
 
 
-def perform_tests(mechanism_fns: Dict[str, MechanismFn],
+def perform_tests(mechanism_fns: Dict[str, CompiledMechanismFn],
                   is_invertible: Dict[str, bool],
                   sampling_fns: Dict[str, SamplingFn],
                   classifiers: Dict[str, ClassifierFn],
-                  test_set: Any,
-                  test_dict: Dict[str, Test]) -> int:
-    test_results = {key: [] for key in test_dict.keys()}
+                  test_set: Any) -> int:
     show_image = True
-
-    tests = dict.fromkeys(mechanism_fns.keys(), )
+    parent_names = mechanism_fns.keys()
+    tests = {key: dict.fromkeys(['effectiveness', 'composition', 'reversibility']) for key in parent_names}
     for parent_name, mechanism_fn in mechanism_fns.items():
-        tests[parent_name]['effectiveness'] = effectiveness_test(mechanism_fn, parent_name, sampling_fns[parent_name],
-                                                                   classifiers)
-
-        tests[f'{parent_name}_composition'] = composition_test(mechanism_fn, parent_name)
+        sampling_fn = sampling_fns[parent_name]
+        tests[parent_name]['effectiveness'] = effectiveness_test(mechanism_fn, parent_name, sampling_fn, classifiers)
+        tests[parent_name]['composition'] = composition_test(mechanism_fn, parent_name)
         if is_invertible[parent_name]:
-            tests[f'{parent_name}_reversibility'] = reversibility_test(mechanism_fn, parent_name,
-                                                                       sampling_fns[parent_name])
+            tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_name, sampling_fn)
 
     rng = random.PRNGKey(0)
+    test_results = None  # {key: dict.fromkeys(['effectiveness', 'composition', 'reversibility']) for key in parent_names}
     for image, parents in test_set:
-        for test_name, test_fn in test_dict.items():
-            result, image_seq = test_fn(rng, image, parents)
-            test_results[test_name].append(result)
-            if show_image:
-                plot_image_sequence(image_seq, title=test_name, n_cases=10)
+        rng, _ = jax.random.split(rng)
+        batch_results = {key: dict.fromkeys(['effectiveness', 'composition', 'reversibility']) for key in parent_names}
+        for parent_name in parent_names:
+            for test_name, test_fn in tests[parent_name]:
+                batch_results[parent_name][test_name], image_seq = test_fn(rng, image, parents)
+                if show_image:
+                    plot_image_sequence(image_seq, n_cases=10)
         show_image = False
-    test_results = {key: np.concatenate(value) for key, value in test_results.items()}
-    loss_plot(test_results)
+        if test_results is None:
+            test_results = batch_results
+        else:
+            test_results = jax.tree_map(lambda x, y: np.concatenate((x, y)), test_results, batch_results)
+
     return test_results
+
+
+def print_nested_dict(nested_dict: Dict, key: Tuple[str, ...] = ()) -> None:
+    for sub_key, value in nested_dict.items():
+        new_key = key + (str(sub_key),)
+        if isinstance(value, dict):
+            print_nested_dict(value, new_key)
+        else:
+            print(new_key, value)
+
+
+def print_test_results(trees: Iterable[Any]):
+    tree_of_stacks = jax.tree_map(lambda x, y: np.stack((x, y), axis=1), *trees)
+
+    def print_fn(value, precision='.4f'):
+        print(f'{np.mean(value):{precision}} {np.std(value):{precision}}')
+
+    print_nested_dict(jax.tree_map(print_fn, tree_of_stacks))
 
 
 ##
