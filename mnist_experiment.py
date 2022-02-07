@@ -153,13 +153,13 @@ if __name__ == '__main__':
             if job_dir.exists() and (job_dir / 'results.pickle').exists():
                 if args.overwrite:
                     shutil.rmtree(job_dir)
-                else:
-                    continue
+                # else:
+                #     continue
 
             classifiers = {}
             for parent_name, parent_dim in parent_dims.items():
                 classifiers[parent_name] = train_classifier(job_dir=job_dir,
-                                                            seed=args.seed,
+                                                            seed=seed,
                                                             parent_name=parent_name,
                                                             num_classes=parent_dim,
                                                             layers=layers,
@@ -174,7 +174,7 @@ if __name__ == '__main__':
                             for parent_name in parent_dims.keys()}
             for parent_name, parent_dim in parent_dims.items():
                 mechanisms[parent_name] = train_mechanism(job_dir=job_dir,
-                                                          seed=args.seed,
+                                                          seed=seed,
                                                           parent_name=parent_name,
                                                           parent_dims=parent_dims,
                                                           classifiers=classifiers,

@@ -9,6 +9,7 @@ from numpy.typing import NDArray
 
 from components import Array, KeyArray
 from models import ClassifierFn, SamplingFn
+from run_experiment import to_numpy_iterator
 
 Test = Callable[[KeyArray, Array, Dict[str, Array]], Tuple[Dict[str, NDArray], Optional[NDArray]]]
 DistanceMetric = Callable[[Array, Array], Array]
@@ -89,6 +90,7 @@ def reversibility_test(mechanism_fn: CompiledMechanismFn,
 
 def plot_image_sequence(image_seq: np.ndarray, title: str = '', n_cases: int = 10) -> None:
     image_seq = image_seq[:n_cases]
+    image_seq = np.clip(image_seq * 255., a_min=0, a_max=255) / 255.
     gallery = np.moveaxis(image_seq, 1, 2).reshape((n_cases * image_seq.shape[2],
                                                     image_seq.shape[1] * image_seq.shape[3], image_seq.shape[4]))
     plt.imshow(gallery)
@@ -103,7 +105,7 @@ def perform_tests(mechanism_fns: Dict[str, CompiledMechanismFn],
                   test_set: Any) -> int:
     show_image = True
     parent_names = mechanism_fns.keys()
-    tests = {key: dict.fromkeys(['effectiveness', 'composition', 'reversibility']) for key in parent_names}
+    tests: Dict[str, Dict[str, Test]] = {parent_name: {} for parent_name in parent_names}
     for parent_name, mechanism_fn in mechanism_fns.items():
         sampling_fn = sampling_fns[parent_name]
         tests[parent_name]['effectiveness'] = effectiveness_test(mechanism_fn, parent_name, sampling_fn, classifiers)
@@ -112,15 +114,17 @@ def perform_tests(mechanism_fns: Dict[str, CompiledMechanismFn],
             tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_name, sampling_fn)
 
     rng = random.PRNGKey(0)
-    test_results = None  # {key: dict.fromkeys(['effectiveness', 'composition', 'reversibility']) for key in parent_names}
+    test_results: Optional[Dict] = None  # {key: dict.fromkeys(['effectiveness', 'composition', 'reversibility']) for key in parent_names}
+    test_set = to_numpy_iterator(test_set, 512)
+
     for image, parents in test_set:
         rng, _ = jax.random.split(rng)
         batch_results = {key: dict.fromkeys(['effectiveness', 'composition', 'reversibility']) for key in parent_names}
         for parent_name in parent_names:
-            for test_name, test_fn in tests[parent_name]:
+            for test_name, test_fn in tests[parent_name].items():
                 batch_results[parent_name][test_name], image_seq = test_fn(rng, image, parents)
-                if show_image:
-                    plot_image_sequence(image_seq, n_cases=10)
+                if show_image and image_seq is not None:
+                    plot_image_sequence(image_seq, n_cases=10, title=f'{parent_name}_{test_name}')
         show_image = False
         if test_results is None:
             test_results = batch_results
