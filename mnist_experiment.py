@@ -1,4 +1,5 @@
 import argparse
+import pickle
 import shutil
 from itertools import product
 from pathlib import Path
@@ -16,9 +17,9 @@ from components.stax_extension import PixelNorm2D, Reshape
 from datasets.confounded_mnist import create_confounded_mnist_dataset, function_dict_to_confounding_fn, \
     get_colorize_fn, get_fracture_fn, get_thickening_fn, get_thinning_fn
 from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
+from identifiability_tests import perform_tests, print_test_results
 from models.functional_counterfactual import get_sampling_fn
 from run_experiment import train_classifier, train_mechanism
-from identifiability_tests import perform_tests, print_test_results
 
 # import matplotlib
 # matplotlib.use('tkagg')
@@ -126,7 +127,7 @@ if __name__ == '__main__':
     parser.add_argument('--job-dir', dest='job_dir', type=Path, help='job-dir where logs and models are saved')
     parser.add_argument('--data-dir', dest='data_dir', type=Path, help='data-dir where files will be saved')
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
-    parser.add_argument('--seed', dest='seed', type=int, help='random seed')
+    parser.add_argument('--seeds', dest='seeds', nargs="+", type=int, help='list of random seeds')
     args = parser.parse_args()
 
     experiments = {'exp_0': experiment_0, 'exp_1': experiment_1, 'exp_2': experiment_2}
@@ -142,48 +143,59 @@ if __name__ == '__main__':
     for exp_name, control in product(experiments, [True, False]):
         job_name = exp_name + ('_control' if control else '')
         job_dir = args.job_dir / job_name
-        job_dir = Path(job_dir)
-        if job_dir.exists() and args.overwrite:
-            shutil.rmtree(job_dir)
         data_dir = str(args.data_dir / job_name)
-
         train_confounding_fns, test_confounding_fns, parent_dims, is_invertible = experiments[exp_name](control)
         train_datasets, test_dataset, marginals, input_shape = \
             create_confounded_mnist_dataset(data_dir, train_confounding_fns, test_confounding_fns, parent_dims)
 
-        classifiers = {}
-        for parent_name, parent_dim in parent_dims.items():
-            classifiers[parent_name] = train_classifier(job_dir=job_dir,
-                                                        seed=args.seed,
-                                                        parent_name=parent_name,
-                                                        num_classes=parent_dim,
-                                                        layers=layers,
-                                                        train_datasets=train_datasets,
-                                                        test_dataset=test_dataset,
-                                                        input_shape=input_shape,
-                                                        optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
-                                                        batch_size=1024,
-                                                        num_steps=2000)
-        mechanisms = {}
-        sampling_fns = {parent_name: get_sampling_fn(parent_dims[parent_name], False, marginals[parent_name])
-                        for parent_name in parent_dims.keys()}
-        for parent_name, parent_dim in parent_dims.items():
-            mechanisms[parent_name] = train_mechanism(job_dir=job_dir,
-                                                      seed=args.seed,
-                                                      parent_name=parent_name,
-                                                      parent_dims=parent_dims,
-                                                      classifiers=classifiers,
-                                                      critic_layers=layers,
-                                                      mechanism=mechanism(parent_dim),
-                                                      sampling_fn=sampling_fns[parent_name],
-                                                      is_invertible=is_invertible[parent_name],
-                                                      train_datasets=train_datasets,
-                                                      test_dataset=test_dataset,
-                                                      input_shape=input_shape,
-                                                      optimizer=mechanism_optimizer,
-                                                      batch_size=512,
-                                                      num_steps=5000)
+        for seed in args.seeds:
+            job_dir = args.job_dir / job_name / f'seed_{seed:d}'
+            if job_dir.exists() and (job_dir / 'results.pickle').exists():
+                if args.overwrite:
+                    shutil.rmtree(job_dir)
+                else:
+                    continue
 
-        # identifiability tests
-        test_results = perform_tests(mechanisms, is_invertible, sampling_fns, classifiers, test_dataset)
-        print_test_results([test_results])
+            classifiers = {}
+            for parent_name, parent_dim in parent_dims.items():
+                classifiers[parent_name] = train_classifier(job_dir=job_dir,
+                                                            seed=args.seed,
+                                                            parent_name=parent_name,
+                                                            num_classes=parent_dim,
+                                                            layers=layers,
+                                                            train_datasets=train_datasets,
+                                                            test_dataset=test_dataset,
+                                                            input_shape=input_shape,
+                                                            optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
+                                                            batch_size=1024,
+                                                            num_steps=2000)
+            mechanisms = {}
+            sampling_fns = {parent_name: get_sampling_fn(parent_dims[parent_name], False, marginals[parent_name])
+                            for parent_name in parent_dims.keys()}
+            for parent_name, parent_dim in parent_dims.items():
+                mechanisms[parent_name] = train_mechanism(job_dir=job_dir,
+                                                          seed=args.seed,
+                                                          parent_name=parent_name,
+                                                          parent_dims=parent_dims,
+                                                          classifiers=classifiers,
+                                                          critic_layers=layers,
+                                                          mechanism=mechanism(parent_dim),
+                                                          sampling_fn=sampling_fns[parent_name],
+                                                          is_invertible=is_invertible[parent_name],
+                                                          train_datasets=train_datasets,
+                                                          test_dataset=test_dataset,
+                                                          input_shape=input_shape,
+                                                          optimizer=mechanism_optimizer,
+                                                          batch_size=512,
+                                                          num_steps=5000)
+
+            # identifiability tests
+            test_results = perform_tests(mechanisms, is_invertible, sampling_fns, classifiers, test_dataset)
+            with open(job_dir / 'results.pickle', mode='wb') as f:
+                pickle.dump(test_results, f)
+
+        list_of_test_results = []
+        for subdir in (args.job_dir / job_name).iterdir():
+            with open(subdir / 'results.pickle', mode='rb') as f:
+                list_of_test_results.append(pickle.load(f))
+        print_test_results(list_of_test_results)
