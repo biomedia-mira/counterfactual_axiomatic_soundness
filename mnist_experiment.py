@@ -1,31 +1,21 @@
 import argparse
-import pickle
-import shutil
 from itertools import product
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Tuple
 
-import jax
 import jax.numpy as jnp
-import numpy as np
 import tensorflow as tf
 from jax.experimental import optimizers
-from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh, serial
+from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, serial, Tanh
 
 from components import Array, KeyArray, Params, Shape, StaxLayer
-from components.stax_extension import PixelNorm2D, Reshape
-from datasets.confounded_mnist import create_confounded_mnist_dataset, function_dict_to_confounding_fn, \
-    get_colorize_fn, get_fracture_fn, get_thickening_fn, get_thinning_fn
-from datasets.utils import ConfoundingFn, get_diagonal_confusion_matrix, get_uniform_confusion_matrix
-from identifiability_tests import perform_tests, print_test_results
-from models.functional_counterfactual import get_sampling_fn
-from run_experiment import train_classifier, train_mechanism
+from components.stax_extension import PixelNorm2D, ResBlock, Reshape
+from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario
+from run_experiment import ClassifierConfig, MechanismConfig, run_experiment, train_classifier
 
 # import matplotlib
 # matplotlib.use('tkagg')
 tf.config.experimental.set_visible_devices([], 'GPU')
-
-Experiment = Tuple[List[ConfoundingFn], List[ConfoundingFn], Dict[str, int], Dict[str, bool]]
 
 
 def mechanism(parent_dim: int) -> StaxLayer:
@@ -46,156 +36,90 @@ def mechanism(parent_dim: int) -> StaxLayer:
         output_shape, dec_params = dec_init_fn(rng, (*enc_output_shape[:-1], enc_output_shape[-1] + 2 * parent_dim))
         return output_shape, (enc_params, dec_params)
 
-    def apply_fn(params: Params, inputs: Array, parent: Array, do_parent: Array) -> Array:
+    def apply_fn(params: Params, image: Array, parent: Array, do_parent: Array) -> Array:
         enc_params, dec_params = params
-        latent_code = jnp.concatenate([enc_apply_fn(enc_params, inputs), parent, do_parent], axis=-1)
+        latent_code = jnp.concatenate([enc_apply_fn(enc_params, image), parent, do_parent], axis=-1)
         return dec_apply_fn(dec_params, latent_code)
 
     return init_fn, apply_fn
-
-
-def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int]) -> StaxLayer:
-    _init_fn, _apply_fn = serial(Conv(out_features, filter_shape=(3, 3), strides=(1, 1), padding='SAME'),
-                                 PixelNorm2D, LeakyRelu,
-                                 Conv(out_features, filter_shape=filter_shape, strides=strides, padding='SAME'),
-                                 PixelNorm2D, LeakyRelu)
-
-    def apply_fn(params: Params, inputs: Array, **kwargs: Any) -> Array:
-        output = _apply_fn(params, inputs)
-        residual = jax.image.resize(jnp.repeat(inputs, output.shape[-1] // inputs.shape[-1], axis=-1),
-                                    shape=output.shape, method='bilinear')
-        return output + residual
-
-    return _init_fn, apply_fn
-
-
-def experiment_0(control: bool = False) -> Experiment:
-    parent_dims = {'digit': 10, 'color': 10}
-    is_invertible = {'digit': False, 'color': True}
-    test_colorize_cm = get_uniform_confusion_matrix(10, 10)
-    train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if not control else test_colorize_cm
-    train_colorize_fn = get_colorize_fn(train_colorize_cm)
-    test_colorize_fn = get_colorize_fn(test_colorize_cm)
-    return [train_colorize_fn], [test_colorize_fn], parent_dims, is_invertible
-
-
-# Even digits have much higher chance of thick
-def experiment_1(control: bool = False) -> Experiment:
-    parent_dims = {'digit': 10, 'thickness': 2, 'color': 10}
-    is_invertible = {'digit': False, 'thickness': True, 'color': True}
-
-    even_heavy_cm = np.zeros(shape=(10, 2))
-    even_heavy_cm[0:-1:2] = (.1, .9)
-    even_heavy_cm[1::2] = (.9, .1)
-
-    test_thickening_cm = get_uniform_confusion_matrix(10, 2)
-    test_colorize_cm = get_uniform_confusion_matrix(10, 10)
-    train_thickening_cm = even_heavy_cm if not control else test_thickening_cm
-    train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if not control else test_colorize_cm
-
-    function_dict = {0: get_thinning_fn(), 1: get_thickening_fn()}
-    train_thickening_fn = function_dict_to_confounding_fn(function_dict, train_thickening_cm)
-    test_thickening_fn = function_dict_to_confounding_fn(function_dict, test_thickening_cm)
-    train_colorize_fn = get_colorize_fn(train_colorize_cm)
-    test_colorize_fn = get_colorize_fn(test_colorize_cm)
-    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims, is_invertible
-
-
-def experiment_2(control: bool = False) -> Experiment:
-    parent_dims = {'digit': 10, 'fracture': 2, 'color': 10}
-    is_invertible = {'digit': False, 'fracture': False, 'color': True}
-
-    even_heavy_cm = np.zeros(shape=(10, 2))
-    even_heavy_cm[0:-1:2] = (.1, .9)
-    even_heavy_cm[1::2] = (.9, .1)
-
-    test_thickening_cm = get_uniform_confusion_matrix(10, 2)
-    test_colorize_cm = get_uniform_confusion_matrix(10, 10)
-    train_thickening_cm = even_heavy_cm if not control else test_thickening_cm
-    train_colorize_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if not control else test_colorize_cm
-
-    function_dict = {0: lambda x: x, 1: get_fracture_fn(num_frac=1)}
-    train_thickening_fn = function_dict_to_confounding_fn(function_dict, train_thickening_cm)
-    test_thickening_fn = function_dict_to_confounding_fn(function_dict, test_thickening_cm)
-    train_colorize_fn = get_colorize_fn(train_colorize_cm)
-    test_colorize_fn = get_colorize_fn(test_colorize_cm)
-    return [train_thickening_fn, train_colorize_fn], [test_thickening_fn, test_colorize_fn], parent_dims, is_invertible
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--job-dir', dest='job_dir', type=Path, help='job-dir where logs and models are saved')
     parser.add_argument('--data-dir', dest='data_dir', type=Path, help='data-dir where files will be saved')
+    parser.add_argument('--scenario-name', dest='scenario_name', type=str, help='Name of scenario to run.')
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
     parser.add_argument('--seeds', dest='seeds', nargs="+", type=int, help='list of random seeds')
     args = parser.parse_args()
 
-    experiments = {'exp_0': experiment_0, 'exp_1': experiment_1, 'exp_2': experiment_2}
+    scenarios = {'digit_colour_scenario': digit_colour_scenario,
+                 'digit_fracture_colour_scenario': digit_fracture_colour_scenario}
 
-    layers: Tuple[StaxLayer, ...] = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
-                                     ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
-                                     ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
-                                     Flatten, Dense(128), LeakyRelu)
+    parameter_space = {'confound': [True, False], 'de_confound': [True, False], 'constraint_function_exponent': [1, 3]}
 
-    schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[5e-4, 5e-4 / 2, 5e-4 / 8])
+    layers = (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
+              ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
+              ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
+              Flatten(), Dense(128), LeakyRelu)
+
+    schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
     mechanism_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
 
-    for exp_name, control in product(experiments, [True, False]):
-        job_name = exp_name + ('_control' if control else '')
-        job_dir = args.job_dir / job_name
-        data_dir = str(args.data_dir / job_name)
-        train_confounding_fns, test_confounding_fns, parent_dims, is_invertible = experiments[exp_name](control)
-        train_datasets, test_dataset, marginals, input_shape = \
-            create_confounded_mnist_dataset(data_dir, train_confounding_fns, test_confounding_fns, parent_dims)
+    scenario_dir = args.job_dir / args.scenario_name
+    scenario_fn = scenarios[args.scenario_name]
 
-        for seed in args.seeds:
-            job_dir = args.job_dir / job_name / f'seed_{seed:d}'
-            if job_dir.exists() and (job_dir / 'results.pickle').exists():
-                if args.overwrite:
-                    shutil.rmtree(job_dir)
-                # else:
-                #     continue
+    train_datasets, test_dataset, parent_dims, _, marginals, input_shape = scenario_fn(args.data_dir, False, False)
 
-            classifiers = {}
-            for parent_name, parent_dim in parent_dims.items():
-                classifiers[parent_name] = train_classifier(job_dir=job_dir,
-                                                            seed=seed,
-                                                            parent_name=parent_name,
-                                                            num_classes=parent_dim,
-                                                            layers=layers,
-                                                            train_datasets=train_datasets,
-                                                            test_dataset=test_dataset,
-                                                            input_shape=input_shape,
-                                                            optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
-                                                            batch_size=1024,
-                                                            num_steps=2000)
-            mechanisms = {}
-            sampling_fns = {parent_name: get_sampling_fn(parent_dims[parent_name], False, marginals[parent_name])
-                            for parent_name in parent_dims.keys()}
-            for parent_name, parent_dim in parent_dims.items():
-                mechanisms[parent_name] = train_mechanism(job_dir=job_dir,
-                                                          seed=seed,
-                                                          parent_name=parent_name,
+    classifier_configs = {parent_name: ClassifierConfig(parent_name=parent_name,
+                                                        parent_dims=parent_dims,
+                                                        input_shape=input_shape,
+                                                        layers=layers,
+                                                        optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
+                                                        batch_size=1024,
+                                                        num_steps=2000,
+                                                        log_every=1,
+                                                        eval_every=50,
+                                                        save_every=50) for parent_name in parent_dims.keys()}
+
+    pseudo_oracles = {parent_name: train_classifier(job_dir=scenario_dir / 'pseudo_oracles',
+                                                    seed=99,
+                                                    train_datasets=train_datasets,
+                                                    test_dataset=test_dataset,
+                                                    config=config)
+                      for parent_name, config in classifier_configs.items()}
+
+    for confound, de_confound, constraint_function_exponent in product(*parameter_space.values()):
+        if not confound and de_confound:
+            continue
+        job_name = f'confound_{str(confound)}_de_confounded_{str(de_confound)}_M_{constraint_function_exponent:d}'
+        job_dir = scenario_dir / job_name
+        train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape \
+            = scenario_fn(args.data_dir, confound, de_confound)
+
+        mechanism_configs = {parent_name: MechanismConfig(parent_name=parent_name,
                                                           parent_dims=parent_dims,
-                                                          classifiers=classifiers,
-                                                          critic_layers=layers,
-                                                          mechanism=mechanism(parent_dim),
-                                                          sampling_fn=sampling_fns[parent_name],
-                                                          is_invertible=is_invertible[parent_name],
-                                                          train_datasets=train_datasets,
-                                                          test_dataset=test_dataset,
                                                           input_shape=input_shape,
+                                                          critic_layers=layers,
+                                                          mechanism=mechanism(parent_dims[parent_name]),
+                                                          marginal_dist=marginals[parent_name],
+                                                          is_invertible=is_invertible[parent_name],
+                                                          condition_divergence_on_parents=True,
+                                                          constraint_function_exponent=constraint_function_exponent,
                                                           optimizer=mechanism_optimizer,
                                                           batch_size=512,
-                                                          num_steps=5000)
+                                                          num_steps=5000,
+                                                          log_every=1,
+                                                          eval_every=250,
+                                                          save_every=250)
+                             for parent_name, parent_dim in parent_dims.items()}
 
-            # identifiability tests
-            test_results = perform_tests(mechanisms, is_invertible, sampling_fns, classifiers, test_dataset)
-            with open(job_dir / 'results.pickle', mode='wb') as f:
-                pickle.dump(test_results, f)
-
-        list_of_test_results = []
-        for subdir in (args.job_dir / job_name).iterdir():
-            with open(subdir / 'results.pickle', mode='rb') as f:
-                list_of_test_results.append(pickle.load(f))
-        print_test_results(list_of_test_results)
+        run_experiment(job_dir,
+                       args.overwrite,
+                       args.seeds,
+                       train_datasets,
+                       test_dataset,
+                       parent_dims,
+                       classifier_configs,
+                       mechanism_configs,
+                       pseudo_oracles)

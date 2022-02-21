@@ -4,6 +4,7 @@ from typing import Iterable, Optional
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.experimental.optimizers import Params
 from tqdm import tqdm
 
@@ -20,7 +21,12 @@ def train(model: Model,
           seed: int,
           log_every: int,
           eval_every: int,
-          save_every: int) -> Params:
+          save_every: int,
+          overwrite: bool = False) -> Params:
+    model_path = job_dir / f'model.npy'
+    if model_path.exists() and not overwrite:
+        return np.load(str(model_path), allow_pickle=True)
+
     job_dir.mkdir(exist_ok=True, parents=True)
     train_writer = get_writer_fn(job_dir, 'train')
     test_writer = get_writer_fn(job_dir, 'test')
@@ -49,6 +55,6 @@ def train(model: Model,
             test_writer(cum_output, step, None)
 
         if step % save_every == 0 or step == num_steps - 1:
-            jnp.save(str(job_dir / f'model.npy'), get_params(opt_state))
+            jnp.save(str(model_path), get_params(opt_state))
 
     return get_params(opt_state)

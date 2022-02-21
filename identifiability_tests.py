@@ -1,4 +1,7 @@
-from typing import Any, Callable, Dict, Optional, Tuple, Iterable
+import pickle
+from functools import partial
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -8,25 +11,44 @@ import numpy as np
 from numpy.typing import NDArray
 
 from components import Array, KeyArray
+from datasets.confounded_mnist import image_gallery
 from models import ClassifierFn, SamplingFn
 from run_experiment import to_numpy_iterator
 
-Test = Callable[[KeyArray, Array, Dict[str, Array]], Tuple[Dict[str, NDArray], Optional[NDArray]]]
-DistanceMetric = Callable[[Array, Array], Array]
-
 # [[image, parent, do_parent, do_noise], do_image]
 CompiledMechanismFn = Callable[[Array, Array, Array], Array]
+TestResult = Dict[str, Union['TestResult', NDArray]]
+Test = Callable[[KeyArray, Array, Dict[str, Array]], Tuple[TestResult, Dict[str, NDArray]]]
+DistanceMetric = Callable[[Array, Array], Array]
+
+gallery_fn = partial(image_gallery, num_images_to_display=100, ncols=10)
 
 
 def l2(x1: Array, x2: Array) -> Array:
     return np.mean(np.power(x1 - x2, 2.), axis=(1, 2, 3))
 
 
+def image_sequence_plot(image_seq: np.ndarray, n_cases: int = 10, max_cols: int = 10) -> NDArray:
+    image_seq = image_seq[:n_cases, :min(image_seq.shape[1], max_cols)]
+    image_seq = np.clip(127.5 * image_seq + 127.5, a_min=0, a_max=255) / 255.
+    gallery = np.moveaxis(image_seq, 1, 2).reshape((n_cases * image_seq.shape[2],
+                                                    image_seq.shape[1] * image_seq.shape[3], image_seq.shape[4]))
+    return gallery
+
+
+def plot_and_save(image: NDArray, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plt.imshow(image)
+    plt.axis('off')
+    plt.savefig(path, bbox_inches='tight', pad_inches=0)
+    plt.show()
+
+
 def effectiveness_test(mechanism_fn: CompiledMechanismFn,
                        parent_name: str,
                        sampling_fn: SamplingFn,
                        classifiers: Dict[str, ClassifierFn]) -> Test:
-    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[Dict[str, NDArray], Optional[NDArray]]:
+    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Dict[str, NDArray]]:
         parent = parents[parent_name]
         do_parent, _ = sampling_fn(rng, (image.shape[0],))
         do_image = mechanism_fn(image, parent, do_parent)
@@ -34,8 +56,13 @@ def effectiveness_test(mechanism_fn: CompiledMechanismFn,
         output = {}
         for _parent_name, _parent in do_parents.items():
             _, output[_parent_name] = classifiers[_parent_name]((do_image, _parent))
+        test_results = jax.tree_map(np.array, output)
+        order = np.argsort(np.argmax(np.array(do_parent), axis=-1))
 
-        return jax.tree_map(np.array, output), None
+        plots = {'image': gallery_fn(np.array(image)[order]),
+                 'do_image': gallery_fn(np.array(do_image)[order]),
+                 'do_nothing': gallery_fn(np.array(mechanism_fn(image, parent, parent))[order])}
+        return test_results, plots
 
     return test
 
@@ -44,7 +71,7 @@ def composition_test(mechanism_fn: CompiledMechanismFn,
                      parent_name: str,
                      distance_metric: DistanceMetric = l2,
                      horizon: int = 10) -> Test:
-    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[Dict[str, NDArray], Optional[NDArray]]:
+    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Dict[str, NDArray]]:
         distance = []
         parent = parents[parent_name]
         do_image = image
@@ -53,8 +80,9 @@ def composition_test(mechanism_fn: CompiledMechanismFn,
             do_image = mechanism_fn(do_image, parent, parent)
             distance.append(distance_metric(image, do_image))
             image_sequence.append(do_image)
-        output = {f'distance_{i:d}': np.array(value) for i, value in enumerate(distance)}
-        return output, np.moveaxis(np.array(image_sequence), 0, 1)
+        test_results = {f'distance_{(i + 1):d}': np.array(value) for i, value in enumerate(distance)}
+        plots = {'composition': image_sequence_plot(np.moveaxis(np.array(image_sequence), 0, 1))}
+        return test_results, plots
 
     return test
 
@@ -65,9 +93,8 @@ def reversibility_test(mechanism_fn: CompiledMechanismFn,
                        distance_metric: DistanceMetric = l2,
                        cycle_length: int = 2,
                        num_cycles: int = 1) -> Test:
-    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[Dict[str, NDArray], Optional[NDArray]]:
+    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Dict[str, NDArray]]:
         distance = []
-        # do_parent_cycle = jnp.eye(parent_dim)[np.random.randint(0, parent_dim, size=(cycle_length - 1, image.shape[0]))]
         do_parent_cycle, _ = sampling_fn(rng, (cycle_length - 1, image.shape[0]))
         do_parent_cycle = jnp.concatenate((do_parent_cycle, parents[parent_name][jnp.newaxis]))
         do_parent_cycle = jnp.concatenate([do_parent_cycle] * num_cycles, axis=0)
@@ -80,30 +107,21 @@ def reversibility_test(mechanism_fn: CompiledMechanismFn,
             image_sequence.append(do_image)
             do_parents = {**do_parents, parent_name: do_parent}
 
-        output = {f'distance_step_{i // cycle_length:d}_cycle_{i % cycle_length:d}': np.array(value)
-                  for i, value in enumerate(distance)}
-
-        return output, np.moveaxis(np.array(image_sequence), 0, 1)
+        output = {f'distance_{(i + 1):d}': np.array(value) for i, value in
+                  enumerate(distance[(cycle_length - 1):-1:cycle_length])}
+        plots = {'reversibility': image_sequence_plot(np.moveaxis(np.array(image_sequence), 0, 1))}
+        return output, plots
 
     return test
 
 
-def plot_image_sequence(image_seq: np.ndarray, title: str = '', n_cases: int = 10) -> None:
-    image_seq = image_seq[:n_cases]
-    image_seq = np.clip(image_seq * 255., a_min=0, a_max=255) / 255.
-    gallery = np.moveaxis(image_seq, 1, 2).reshape((n_cases * image_seq.shape[2],
-                                                    image_seq.shape[1] * image_seq.shape[3], image_seq.shape[4]))
-    plt.imshow(gallery)
-    plt.title(title)
-    plt.show()
-
-
-def perform_tests(mechanism_fns: Dict[str, CompiledMechanismFn],
+def perform_tests(job_dir: Path,
+                  mechanism_fns: Dict[str, CompiledMechanismFn],
                   is_invertible: Dict[str, bool],
                   sampling_fns: Dict[str, SamplingFn],
                   classifiers: Dict[str, ClassifierFn],
-                  test_set: Any) -> int:
-    show_image = True
+                  test_set: Any) -> TestResult:
+    plot = True
     parent_names = mechanism_fns.keys()
     tests: Dict[str, Dict[str, Test]] = {parent_name: {} for parent_name in parent_names}
     for parent_name, mechanism_fn in mechanism_fns.items():
@@ -111,25 +129,30 @@ def perform_tests(mechanism_fns: Dict[str, CompiledMechanismFn],
         tests[parent_name]['effectiveness'] = effectiveness_test(mechanism_fn, parent_name, sampling_fn, classifiers)
         tests[parent_name]['composition'] = composition_test(mechanism_fn, parent_name)
         if is_invertible[parent_name]:
-            tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_name, sampling_fn)
+            tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_name, sampling_fn,
+                                                                     num_cycles=5)
 
     rng = random.PRNGKey(0)
-    test_results: Optional[Dict] = None  # {key: dict.fromkeys(['effectiveness', 'composition', 'reversibility']) for key in parent_names}
-    test_set = to_numpy_iterator(test_set, 512)
+    test_results: TestResult = {}
+    test_set = to_numpy_iterator(test_set, 512, drop_remainder=False)
 
     for image, parents in test_set:
         rng, _ = jax.random.split(rng)
         batch_results = {key: dict.fromkeys(['effectiveness', 'composition', 'reversibility']) for key in parent_names}
         for parent_name in parent_names:
             for test_name, test_fn in tests[parent_name].items():
-                batch_results[parent_name][test_name], image_seq = test_fn(rng, image, parents)
-                if show_image and image_seq is not None:
-                    plot_image_sequence(image_seq, n_cases=10, title=f'{parent_name}_{test_name}')
-        show_image = False
-        if test_results is None:
-            test_results = batch_results
+                batch_results[parent_name][test_name], plots = test_fn(rng, image, parents)
+                if plot:
+                    for name, image_plot in plots.items():
+                        plot_and_save(image_plot, job_dir / 'plots' / parent_name / f'{name}.png')
+        plot = False
+        if len(test_results) == 0:
+            test_results.update(batch_results)
         else:
             test_results = jax.tree_map(lambda x, y: np.concatenate((x, y)), test_results, batch_results)
+
+    with open(job_dir / 'results.pickle', mode='wb') as f:
+        pickle.dump(test_results, f)
 
     return test_results
 
@@ -143,17 +166,14 @@ def print_nested_dict(nested_dict: Dict, key: Tuple[str, ...] = ()) -> None:
             print(new_key, value)
 
 
-def print_test_results(trees: Iterable[Any]):
-    tree_of_stacks = jax.tree_map(lambda x, y: np.stack((x, y), axis=1), *trees)
+def print_test_results(trees: Iterable[Any]) -> None:
+    tree_of_stacks = jax.tree_map(lambda *x: np.stack(x), *trees)
 
-    def print_fn(value, precision='.4f'):
-        print(f'{np.mean(value):{precision}} {np.std(value):{precision}}')
+    def print_fn(value: NDArray, precision: str = '.4f') -> str:
+        per_seed_mean = np.mean(value, axis=-1)
+        return f'{np.mean(per_seed_mean):{precision}} {np.std(per_seed_mean):{precision}}'
 
     print_nested_dict(jax.tree_map(print_fn, tree_of_stacks))
-
-
-##
-
 
 # def permute_transform_test(mechanism_fns: Dict[str, Mechanism], parent_dims: Dict[str, int], noise_dim: int) -> Test:
 #     def test(image: Array, parents: Dict[str, Array]) -> Array:
@@ -183,13 +203,3 @@ def print_test_results(trees: Iterable[Any]):
 #         return np.moveaxis(np.array(l2_loss), 0, 1), np.moveaxis(np.array(images_to_plot), 0, 1)
 #
 #     return test
-
-
-def loss_plot(test_results):
-    for name, array in test_results.items():
-        mean = np.mean(array, axis=0)
-        std = np.std(array, axis=0)
-        plt.plot(mean)
-        plt.fill_between(range(len(mean)), mean - std, mean + std, alpha=.3)
-        plt.title(name)
-        plt.show()

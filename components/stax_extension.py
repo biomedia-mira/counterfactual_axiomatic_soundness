@@ -1,7 +1,8 @@
 from typing import Any, Callable, Tuple, Union
 
+import jax
 import jax.numpy as jnp
-from jax.experimental.stax import ones, zeros
+from jax.experimental.stax import Conv, LeakyRelu, ones, serial, zeros
 from jax.nn import normalize
 
 from components import Array, KeyArray, Params, Shape, StaxLayer
@@ -41,6 +42,21 @@ def reshape(output_shape: Shape) -> StaxLayer:
         return jnp.reshape(inputs, output_shape)
 
     return init_fun, apply_fun
+
+
+def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int]) -> StaxLayer:
+    _init_fn, _apply_fn = serial(Conv(out_features, filter_shape=(3, 3), strides=(1, 1), padding='SAME'),
+                                 PixelNorm2D, LeakyRelu,
+                                 Conv(out_features, filter_shape=filter_shape, strides=strides, padding='SAME'),
+                                 PixelNorm2D, LeakyRelu)
+
+    def apply_fn(params: Params, inputs: Array, **kwargs: Any) -> Array:
+        output = _apply_fn(params, inputs)
+        residual = jax.image.resize(jnp.repeat(inputs, output.shape[-1] // inputs.shape[-1], axis=-1),
+                                    shape=output.shape, mgiethod='bilinear')
+        return output + residual
+
+    return _init_fn, apply_fn
 
 
 Reshape = reshape

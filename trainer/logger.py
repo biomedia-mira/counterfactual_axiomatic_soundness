@@ -21,7 +21,7 @@ def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str],
         value = jnp.mean(value) if value.ndim <= 1 else value
         tf.summary.scalar(tag, value, step) if value.size == 1 else \
             tf.summary.image(tag, np.expand_dims(
-                image_gallery((value * 127.5) + 127.5, num_images_to_display=min(128, value.shape[0])), 0), step)
+                image_gallery(value, num_images_to_display=min(128, value.shape[0])), 0), step)
         if logging_fn is not None:
             logging_fn(f'epoch: {step:d}: \t{tag}: {value:.2f}') if value.size == 1 else None
 

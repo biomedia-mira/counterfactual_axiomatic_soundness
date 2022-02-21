@@ -8,13 +8,18 @@ from more_itertools import powerset
 from numpy.typing import NDArray
 from tqdm import tqdm
 
+from components import Shape
+
 IMAGE = NDArray[np.uint8]
 ConfoundingFn = Callable[[IMAGE, int], Tuple[IMAGE, int]]
+Scenario = Tuple[
+    Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, int], Dict[str, bool], Dict[str, NDArray], Shape]
 
 
-def image_gallery(array: np.ndarray, ncols: int = 16, num_images_to_display: int = 128) -> np.ndarray:
-    array = np.clip(array, a_min=0, a_max=255) / 255.
-    array = array[::len(array) // num_images_to_display]
+def image_gallery(array: np.ndarray, ncols: int = 16, num_images_to_display: int = 128,
+                  decode_fn: Callable[[NDArray], NDArray] = lambda x: 127.5 * x + 127.5) -> NDArray:
+    array = np.clip(decode_fn(array), a_min=0, a_max=255) / 255.
+    array = array[::len(array) // num_images_to_display][:num_images_to_display]
     nindex, height, width, intensity = array.shape
     nrows = nindex // ncols + int(bool(nindex % ncols))
     pad = np.zeros(shape=(nrows * ncols - nindex, height, width, intensity))
