@@ -175,7 +175,7 @@ def print_test_results(trees: Iterable[Any]) -> None:
 
     print_nested_dict(jax.tree_map(print_fn, tree_of_stacks))
 
-# def permute_transform_test(mechanism_fns: Dict[str, Mechanism], parent_dims: Dict[str, int], noise_dim: int) -> Test:
+# def comutativity_test(mechanism_fns: Dict[str, Mechanism], parent_dims: Dict[str, int], noise_dim: int) -> Test:
 #     def test(image: Array, parents: Dict[str, Array]) -> Array:
 #
 #         do_parents = {p_name: jnp.eye(p_dim)[np.random.randint(0, p_dim, size=image.shape[0])]

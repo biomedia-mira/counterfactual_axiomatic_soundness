@@ -12,8 +12,8 @@ from numpy.typing import NDArray
 
 from components import Array, InitFn, Params, Shape, StaxLayer
 from identifiability_tests import perform_tests, print_test_results
-from models import classifier, ClassifierFn, functional_counterfactual, MechanismFn, SamplingFn
-from models.functional_counterfactual import get_sampling_fn
+from models import classifier, ClassifierFn, partial_mechanism, MechanismFn, SamplingFn
+from models.partial_mechanism import get_sampling_fn
 from trainer import train
 
 
@@ -107,17 +107,17 @@ def train_mechanism(job_dir: Path,
     source_dist: FrozenSet[str] = frozenset()
     target_dist = frozenset((config.parent_name,))
 
-    model = functional_counterfactual(source_dist,
-                                      config.parent_dims,
-                                      config.parent_name,
-                                      classifiers,
-                                      config.critic_layers,
-                                      config.mechanism,
-                                      config.sampling_fn,
-                                      config.is_invertible,
-                                      config.optimizer,
-                                      config.condition_divergence_on_parents,
-                                      config.constraint_function_exponent)
+    model = partial_mechanism(source_dist,
+                              config.parent_dims,
+                              config.parent_name,
+                              classifiers,
+                              config.critic_layers,
+                              config.mechanism,
+                              config.sampling_fn,
+                              config.is_invertible,
+                              config.optimizer,
+                              config.condition_divergence_on_parents,
+                              config.constraint_function_exponent)
 
     train_data = to_numpy_iterator(tf.data.Dataset.zip({source_dist: train_datasets[source_dist],
                                                         target_dist: train_datasets[target_dist]}), config.batch_size)

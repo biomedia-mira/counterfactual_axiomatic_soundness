@@ -51,17 +51,17 @@ def condition_on_parents(parent_dims: Dict[str, int]) -> StaxLayer:
     return init_fn, apply_fn
 
 
-def functional_counterfactual(source_dist: FrozenSet[str],
-                              parent_dims: Dict[str, int],
-                              do_parent_name: str,
-                              classifiers: Dict[str, ClassifierFn],
-                              critic_layers: Iterable[StaxLayer],
-                              mechanism: Tuple[InitFn, MechanismFn],
-                              sampling_fn: SamplingFn,
-                              is_invertible: bool,
-                              optimizer: Optimizer,
-                              condition_divergence_on_parents: bool = True,
-                              constraint_function_exponent: int = 1) -> Model:
+def partial_mechanism(source_dist: FrozenSet[str],
+                      parent_dims: Dict[str, int],
+                      do_parent_name: str,
+                      classifiers: Dict[str, ClassifierFn],
+                      critic_layers: Iterable[StaxLayer],
+                      mechanism: Tuple[InitFn, MechanismFn],
+                      sampling_fn: SamplingFn,
+                      is_invertible: bool,
+                      optimizer: Optimizer,
+                      condition_divergence_on_parents: bool = True,
+                      constraint_function_exponent: int = 1) -> Model:
     assert constraint_function_exponent >= 1
     assert len(classifiers) == len(parent_dims) if len(classifiers) > 0 else True
     target_dist = source_dist.union((do_parent_name,))
