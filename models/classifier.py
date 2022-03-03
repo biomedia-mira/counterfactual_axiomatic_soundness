@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, Iterable, Tuple
+from typing import Any, Callable, Dict, Sequence, Tuple
 
 import jax.numpy as jnp
 from jax import jit, value_and_grad
@@ -9,7 +9,7 @@ from jax.experimental.stax import Dense, Flatten, LogSoftmax
 from components import Array, KeyArray, Model, Params, StaxLayer, UpdateFn
 
 
-def classifier(num_classes: int, layers: Iterable[StaxLayer], optimizer: Optimizer) -> Model:
+def classifier(num_classes: int, layers: Sequence[StaxLayer]) -> Model:
     init_fn, classify_fn = stax.serial(*layers, Flatten, Dense(num_classes), LogSoftmax)
 
     def apply_fn(params: Params, inputs: Any, **kwargs: Any) -> Tuple[Array, Dict[str, Array]]:
@@ -19,7 +19,8 @@ def classifier(num_classes: int, layers: Iterable[StaxLayer], optimizer: Optimiz
         cross_entropy = -jnp.sum(prediction * target, axis=-1)
         return jnp.mean(cross_entropy), {'cross_entropy': cross_entropy, 'accuracy': accuracy}
 
-    def init_optimizer_fn(params: Params) -> Tuple[OptimizerState, UpdateFn, Callable[[OptimizerState], Callable]]:
+    def init_optimizer_fn(params: Params, optimizer: Optimizer) \
+            -> Tuple[OptimizerState, UpdateFn, Callable[[OptimizerState], Callable]]:
         opt_init, opt_update, get_params = optimizer
 
         @jit

@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.optimizers import Params
+from jax.experimental.optimizers import Params, Optimizer
 from tqdm import tqdm
 
 from components import Model, Shape
@@ -13,12 +13,13 @@ from trainer.logger import accumulate_output, get_writer_fn
 
 
 def train(model: Model,
-          input_shape: Shape,
           job_dir: Path,
+          seed: int,
           train_data: Iterable,
           test_data: Optional[Iterable],
+          input_shape: Shape,
+          optimizer: Optimizer,
           num_steps: int,
-          seed: int,
           log_every: int,
           eval_every: int,
           save_every: int,
@@ -34,7 +35,7 @@ def train(model: Model,
     init_fn, apply_fn, init_optimizer_fn = model
     rng = jax.random.PRNGKey(seed)
     _, params = init_fn(rng, input_shape)
-    opt_state, update, get_params = init_optimizer_fn(params)
+    opt_state, update, get_params = init_optimizer_fn(params, optimizer)
 
     for step, inputs in tqdm(enumerate(itertools.cycle(train_data)), total=num_steps):
         if step >= num_steps:

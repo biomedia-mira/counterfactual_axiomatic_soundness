@@ -2,7 +2,7 @@ from typing import Any, Callable, Tuple, Union
 
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.optimizers import OptimizerState, Params, ParamsFn
+from jax.experimental.optimizers import OptimizerState, Params, ParamsFn, Optimizer
 from jax.random import KeyArray
 
 Array = Union[jnp.ndarray, np.ndarray, Any]
@@ -12,5 +12,5 @@ ApplyFn = Callable
 StaxLayer = Tuple[InitFn, ApplyFn]
 StaxLayerConstructor = Callable[..., StaxLayer]
 UpdateFn = Callable[[int, OptimizerState, Any, KeyArray], Tuple[OptimizerState, Array, Any]]
-InitOptimizerFn = Callable[[Params], Tuple[OptimizerState, UpdateFn, ParamsFn]]
+InitOptimizerFn = Callable[[Params, Optimizer], Tuple[OptimizerState, UpdateFn, ParamsFn]]
 Model = Tuple[InitFn, ApplyFn, InitOptimizerFn]

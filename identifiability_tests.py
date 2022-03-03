@@ -1,7 +1,7 @@
 import pickle
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -12,11 +12,9 @@ from numpy.typing import NDArray
 
 from components import Array, KeyArray
 from datasets.confounded_mnist import image_gallery
-from models import ClassifierFn, SamplingFn
-from run_experiment import to_numpy_iterator
+from models import ClassifierFn, MarginalDistribution, MechanismFn
+from utils import to_numpy_iterator
 
-# [[image, parent, do_parent, do_noise], do_image]
-CompiledMechanismFn = Callable[[Array, Array, Array], Array]
 TestResult = Dict[str, Union['TestResult', NDArray]]
 Test = Callable[[KeyArray, Array, Dict[str, Array]], Tuple[TestResult, Dict[str, NDArray]]]
 DistanceMetric = Callable[[Array, Array], Array]
@@ -44,40 +42,38 @@ def plot_and_save(image: NDArray, path: Path) -> None:
     plt.show()
 
 
-def effectiveness_test(mechanism_fn: CompiledMechanismFn,
-                       parent_name: str,
-                       sampling_fn: SamplingFn,
-                       classifiers: Dict[str, ClassifierFn]) -> Test:
+def effectiveness_test(mechanism_fn: MechanismFn,
+                       do_parent_name: str,
+                       marginal: MarginalDistribution,
+                       pseudo_oracles: Dict[str, ClassifierFn]) -> Test:
     def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Dict[str, NDArray]]:
-        parent = parents[parent_name]
-        do_parent, _ = sampling_fn(rng, (image.shape[0],))
-        do_image = mechanism_fn(image, parent, do_parent)
-        do_parents = {**parents, parent_name: do_parent}
+        do_parent = marginal.sample(rng, (image.shape[0],))
+        do_parents = {**parents, do_parent_name: do_parent}
+        do_image = mechanism_fn(image, parents, do_parents)
+
         output = {}
         for _parent_name, _parent in do_parents.items():
-            _, output[_parent_name] = classifiers[_parent_name]((do_image, _parent))
+            _, output[_parent_name] = pseudo_oracles[_parent_name]((do_image, _parent))
         test_results = jax.tree_map(np.array, output)
         order = np.argsort(np.argmax(np.array(do_parent), axis=-1))
 
         plots = {'image': gallery_fn(np.array(image)[order]),
                  'do_image': gallery_fn(np.array(do_image)[order]),
-                 'do_nothing': gallery_fn(np.array(mechanism_fn(image, parent, parent))[order])}
+                 'do_nothing': gallery_fn(np.array(mechanism_fn(image, parents, parents))[order])}
         return test_results, plots
 
     return test
 
 
-def composition_test(mechanism_fn: CompiledMechanismFn,
-                     parent_name: str,
+def composition_test(mechanism_fn: MechanismFn,
                      distance_metric: DistanceMetric = l2,
                      horizon: int = 10) -> Test:
     def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Dict[str, NDArray]]:
         distance = []
-        parent = parents[parent_name]
         do_image = image
         image_sequence = [do_image]
         for j in range(horizon):
-            do_image = mechanism_fn(do_image, parent, parent)
+            do_image = mechanism_fn(do_image, parents, parents)
             distance.append(distance_metric(image, do_image))
             image_sequence.append(do_image)
         test_results = {f'distance_{(i + 1):d}': np.array(value) for i, value in enumerate(distance)}
@@ -87,25 +83,25 @@ def composition_test(mechanism_fn: CompiledMechanismFn,
     return test
 
 
-def reversibility_test(mechanism_fn: CompiledMechanismFn,
+def reversibility_test(mechanism_fn: MechanismFn,
                        parent_name: str,
-                       sampling_fn: SamplingFn,
+                       marginal: MarginalDistribution,
                        distance_metric: DistanceMetric = l2,
                        cycle_length: int = 2,
                        num_cycles: int = 1) -> Test:
     def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Dict[str, NDArray]]:
         distance = []
-        do_parent_cycle, _ = sampling_fn(rng, (cycle_length - 1, image.shape[0]))
+        do_parent_cycle = marginal.sample(rng, (cycle_length - 1, image.shape[0]))
         do_parent_cycle = jnp.concatenate((do_parent_cycle, parents[parent_name][jnp.newaxis]))
         do_parent_cycle = jnp.concatenate([do_parent_cycle] * num_cycles, axis=0)
         do_image = image
         image_sequence = [do_image]
-        do_parents = parents
         for do_parent in do_parent_cycle:
-            do_image = mechanism_fn(do_image, do_parents[parent_name], do_parent)
+            do_parents = {**parents, parent_name: do_parent}
+            do_image = mechanism_fn(do_image, parents, do_parents)
             distance.append(distance_metric(image, do_image))
             image_sequence.append(do_image)
-            do_parents = {**do_parents, parent_name: do_parent}
+            parents = do_parents
 
         output = {f'distance_{(i + 1):d}': np.array(value) for i, value in
                   enumerate(distance[(cycle_length - 1):-1:cycle_length])}
@@ -116,21 +112,22 @@ def reversibility_test(mechanism_fn: CompiledMechanismFn,
 
 
 def perform_tests(job_dir: Path,
-                  mechanism_fns: Dict[str, CompiledMechanismFn],
+                  mechanism_fns: Dict[str, MechanismFn],
                   is_invertible: Dict[str, bool],
-                  sampling_fns: Dict[str, SamplingFn],
-                  classifiers: Dict[str, ClassifierFn],
-                  test_set: Any) -> TestResult:
-    plot = True
+                  marginals: Dict[str, MarginalDistribution],
+                  pseudo_oracles: Dict[str, ClassifierFn],
+                  test_set: Any,
+                  plot: bool = True) -> TestResult:
+    assert pseudo_oracles.keys() == is_invertible.keys() == marginals.keys()
     parent_names = mechanism_fns.keys()
+
     tests: Dict[str, Dict[str, Test]] = {parent_name: {} for parent_name in parent_names}
     for parent_name, mechanism_fn in mechanism_fns.items():
-        sampling_fn = sampling_fns[parent_name]
-        tests[parent_name]['effectiveness'] = effectiveness_test(mechanism_fn, parent_name, sampling_fn, classifiers)
-        tests[parent_name]['composition'] = composition_test(mechanism_fn, parent_name)
+        marginal = marginals[parent_name]
+        tests[parent_name]['effectiveness'] = effectiveness_test(mechanism_fn, parent_name, marginal, pseudo_oracles)
+        tests[parent_name]['composition'] = composition_test(mechanism_fn)
         if is_invertible[parent_name]:
-            tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_name, sampling_fn,
-                                                                     num_cycles=5)
+            tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_name, marginal, num_cycles=5)
 
     rng = random.PRNGKey(0)
     test_results: TestResult = {}

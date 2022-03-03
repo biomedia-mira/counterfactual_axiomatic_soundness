@@ -13,6 +13,7 @@ from datasets.morphomnist import skeleton
 from datasets.morphomnist.morpho import ImageMorphology
 from datasets.utils import ConfoundingFn, get_marginal_datasets, IMAGE, image_gallery, load_cached_dataset
 from datasets.utils import get_diagonal_confusion_matrix, get_uniform_confusion_matrix
+from datasets.utils import MarginalDistribution
 from datasets.utils import Scenario
 
 
@@ -150,7 +151,7 @@ def create_confounded_mnist_dataset(data_dir: Path,
                                     test_confounding_fns: List[ConfoundingFn],
                                     parent_dims: Dict[str, int],
                                     de_confound: bool) \
-        -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, NDArray], Shape]:
+        -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, MarginalDistribution], Shape]:
     input_shape = (-1, 28, 28, 3)
     ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False,
                                   data_dir=f'{str(data_dir)}/mnist', as_supervised=True)
