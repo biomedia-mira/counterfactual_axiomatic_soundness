@@ -2,16 +2,16 @@ import argparse
 import pickle
 import shutil
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List
 
 import tensorflow as tf
 from jax.experimental import optimizers
 from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh
 
-from components.stax_extension import PixelNorm2D, ResBlock, Reshape, StaxLayer
+from components.stax_extension import PixelNorm2D, ResBlock, Reshape
 from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario
 from identifiability_tests import perform_tests, print_test_results
-from models import classifier, ClassifierFn, functional_counterfactual, MechanismFn
+from models import ClassifierFn, MechanismFn, classifier, functional_counterfactual
 from trainer import train
 from utils import compile_fn, prep_classifier_data, prep_mechanism_data
 
@@ -138,7 +138,7 @@ def run_experiment(job_dir: Path,
                            log_every=1,
                            eval_every=250,
                            save_every=250)
-            mechanisms[parent_name] = compile_fn(mechanism_apply_fn, params)
+            mechanisms[parent_name] = compile_fn(mechanism_apply_fn, params[1])
 
         mechanisms = dict.fromkeys(parent_names, mechanisms['all']) if not partial_mechanisms else mechanisms
 
