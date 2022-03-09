@@ -2,13 +2,13 @@ import argparse
 import pickle
 import shutil
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Sequence
 
 import tensorflow as tf
 from jax.experimental import optimizers
 from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh
 
-from components.stax_extension import PixelNorm2D, ResBlock, Reshape
+from components.stax_extension import PixelNorm2D, ResBlock, Reshape, StaxLayer
 from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario
 from identifiability_tests import perform_tests, print_test_results
 from models import classifier, ClassifierFn, functional_counterfactual, MechanismFn
@@ -26,7 +26,7 @@ layers = \
     (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
      ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
      ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
-     Flatten(), Dense(128), LeakyRelu)
+     Flatten, Dense(128), LeakyRelu)
 
 mechanism_encoder_layers = \
     (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
@@ -112,7 +112,7 @@ def run_experiment(job_dir: Path,
             classifiers[parent_name] = compile_fn(fn=model[1], params=params)
 
         # train (partial) mechanisms
-        mechanisms: Dict[Optional[str], MechanismFn] = {}
+        mechanisms: Dict[str, MechanismFn] = {}
         for parent_name in (parent_names if partial_mechanisms else ['all']):
             model, mechanism_apply_fn = functional_counterfactual(do_parent_name=parent_name,
                                                                   parent_dims=parent_dims,
@@ -141,6 +141,7 @@ def run_experiment(job_dir: Path,
             mechanisms[parent_name] = compile_fn(mechanism_apply_fn, params)
 
         mechanisms = dict.fromkeys(parent_names, mechanisms['all']) if not partial_mechanisms else mechanisms
+
         test_results = perform_tests(seed_dir, mechanisms, is_invertible, marginals, pseudo_oracles, test_dataset)
         with open(seed_dir / 'results.pickle', mode='wb') as f:
             pickle.dump(test_results, f)
@@ -160,6 +161,9 @@ if __name__ == '__main__':
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
     parser.add_argument('--seeds', dest='seeds', nargs="+", type=int, help='list of random seeds')
     args = parser.parse_args()
+
+    run_experiment(args.job_dir, args.data_dir, args.scenario_name, args.overwrite, args.seeds,
+                   partial_mechanisms=True, confound=True, de_confound=True, constraint_function_power=1)
 # for confound, de_confound, constraint_function_exponent in product(*parameter_space.values()):
 #     if not confound and de_confound:
 #         continue

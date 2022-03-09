@@ -1,7 +1,7 @@
 import pickle
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Tuple, Union
 
 import jax
 import jax.numpy as jnp
