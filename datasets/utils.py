@@ -18,7 +18,7 @@ Scenario = Tuple[
     Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, int], Dict[str, bool], Dict[str, MarginalDistribution], Shape]
 
 
-def image_gallery(array: np.ndarray, ncols: int = 16, num_images_to_display: int = 128,
+def image_gallery(array: NDArray, ncols: int = 16, num_images_to_display: int = 128,
                   decode_fn: Callable[[NDArray], NDArray] = lambda x: 127.5 * x + 127.5) -> NDArray:
     array = np.clip(decode_fn(array), a_min=0, a_max=255) / 255.
     array = array[::len(array) // num_images_to_display][:num_images_to_display]
@@ -74,7 +74,7 @@ def get_resample_fn(num_repeats: tf.Tensor, parent_dims: Dict[str, int]) \
     return resample_fn
 
 
-def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, np.ndarray], parent_dims: Dict[str, int]) \
+def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, NDArray], parent_dims: Dict[str, int]) \
         -> Tuple[Dict[FrozenSet, tf.data.Dataset], Dict[str, MarginalDistribution]]:
     indicator = {key: [parents[key] == i for i in range(dim)] for key, dim in parent_dims.items()}
     index_map = np.array([np.logical_and.reduce(a) for a in itertools.product(*indicator.values())])

@@ -91,7 +91,7 @@ def run_experiment(job_dir: Path,
             if overwrite:
                 shutil.rmtree(seed_dir)
             else:
-                continue
+                pass
 
         # train classifiers
         classifiers: Dict[str, ClassifierFn] = {}

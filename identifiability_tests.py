@@ -1,5 +1,4 @@
 import pickle
-from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Tuple, Union
 
@@ -11,7 +10,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 from components import Array, KeyArray
-from datasets.confounded_mnist import image_gallery
 from models import ClassifierFn, MarginalDistribution, MechanismFn
 from utils import to_numpy_iterator
 
@@ -19,16 +17,44 @@ TestResult = Dict[str, Union['TestResult', NDArray]]
 Test = Callable[[KeyArray, Array, Dict[str, Array]], Tuple[TestResult, Dict[str, NDArray]]]
 DistanceMetric = Callable[[Array, Array], Array]
 
-gallery_fn = partial(image_gallery, num_images_to_display=100, ncols=10)
+
+def decode_fn(x: NDArray) -> NDArray:
+    return np.clip(127.5 * x + 127.5, a_min=0, a_max=255) / 255.
 
 
 def l2(x1: Array, x2: Array) -> Array:
     return np.mean(np.power(x1 - x2, 2.), axis=(1, 2, 3))
 
 
-def image_sequence_plot(image_seq: np.ndarray, n_cases: int = 10, max_cols: int = 10) -> NDArray:
+def effectiveness_plot(image: NDArray,
+                       do_nothing: NDArray,
+                       do_image: NDArray,
+                       nrows: int = 10,
+                       cases_per_row: int = 3,
+                       _decode_fn: Callable[[NDArray], NDArray] = decode_fn,
+                       sep_width: int = 1) -> NDArray:
+    height, width, channels = image.shape[1:]
+    ncols = 3 * cases_per_row
+    num_cases = cases_per_row * nrows
+    im = _decode_fn(np.stack((image, do_nothing, do_image), axis=1))
+    im = im[::len(im) // num_cases][:num_cases]
+    im = np.reshape(im, (-1, *image.shape[1:]))
+    gallery = (im.reshape((nrows, ncols, height, width, channels))
+               .swapaxes(1, 2)
+               .reshape(height * nrows, width * ncols, channels))
+    if sep_width > 0:
+        for i in range(3, ncols, 3):
+            start, stop = width * i - sep_width // 2, width * i + sep_width // 2 + sep_width % 2
+            gallery[:, start:stop, :] = 255
+    return gallery
+
+
+def sequence_plot(image_seq: NDArray,
+                  n_cases: int = 10,
+                  max_cols: int = 10,
+                  _decode_fn: Callable[[NDArray], NDArray] = decode_fn) -> NDArray:
     image_seq = image_seq[:n_cases, :min(image_seq.shape[1], max_cols)]
-    image_seq = np.clip(127.5 * image_seq + 127.5, a_min=0, a_max=255) / 255.
+    image_seq = _decode_fn(image_seq)
     gallery = np.moveaxis(image_seq, 1, 2).reshape((n_cases * image_seq.shape[2],
                                                     image_seq.shape[1] * image_seq.shape[3], image_seq.shape[4]))
     return gallery
@@ -56,10 +82,8 @@ def effectiveness_test(mechanism_fn: MechanismFn,
             _, output[_parent_name] = pseudo_oracles[_parent_name]((do_image, _parent))
         test_results = jax.tree_map(np.array, output)
         order = np.argsort(np.argmax(np.array(do_parent), axis=-1))
-
-        plots = {'image': gallery_fn(np.array(image)[order]),
-                 'do_image': gallery_fn(np.array(do_image)[order]),
-                 'do_nothing': gallery_fn(np.array(mechanism_fn(image, parents, parents))[order])}
+        do_nothing = mechanism_fn(image, parents, parents)
+        plots = {'image': effectiveness_plot(image[order], do_nothing[order], do_image[order])}
         return test_results, plots
 
     return test
@@ -77,7 +101,7 @@ def composition_test(mechanism_fn: MechanismFn,
             distance.append(distance_metric(image, do_image))
             image_sequence.append(do_image)
         test_results = {f'distance_{(i + 1):d}': np.array(value) for i, value in enumerate(distance)}
-        plots = {'composition': image_sequence_plot(np.moveaxis(np.array(image_sequence), 0, 1))}
+        plots = {'composition': sequence_plot(np.moveaxis(np.array(image_sequence), 0, 1))}
         return test_results, plots
 
     return test
@@ -105,7 +129,7 @@ def reversibility_test(mechanism_fn: MechanismFn,
 
         output = {f'distance_{(i + 1):d}': np.array(value) for i, value in
                   enumerate(distance[(cycle_length - 1):-1:cycle_length])}
-        plots = {'reversibility': image_sequence_plot(np.moveaxis(np.array(image_sequence), 0, 1))}
+        plots = {'reversibility': sequence_plot(np.moveaxis(np.array(image_sequence), 0, 1))}
         return output, plots
 
     return test
