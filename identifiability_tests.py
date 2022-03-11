@@ -75,14 +75,14 @@ def effectiveness_test(mechanism_fn: MechanismFn,
     def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Dict[str, NDArray]]:
         do_parent = marginal.sample(rng, (image.shape[0],))
         do_parents = {**parents, do_parent_name: do_parent}
-        do_image = mechanism_fn(image, parents, do_parents)
+        do_image = mechanism_fn(rng, image, parents, do_parents)
 
         output = {}
         for _parent_name, _parent in do_parents.items():
             _, output[_parent_name] = pseudo_oracles[_parent_name]((do_image, _parent))
         test_results = jax.tree_map(np.array, output)
         order = np.argsort(np.argmax(np.array(do_parent), axis=-1))
-        do_nothing = mechanism_fn(image, parents, parents)
+        do_nothing = mechanism_fn(rng, image, parents, parents)
         plots = {'image': effectiveness_plot(image[order], do_nothing[order], do_image[order])}
         return test_results, plots
 
@@ -97,7 +97,7 @@ def composition_test(mechanism_fn: MechanismFn,
         do_image = image
         image_sequence = [do_image]
         for j in range(horizon):
-            do_image = mechanism_fn(do_image, parents, parents)
+            do_image = mechanism_fn(rng, do_image, parents, parents)
             distance.append(distance_metric(image, do_image))
             image_sequence.append(do_image)
         test_results = {f'distance_{(i + 1):d}': np.array(value) for i, value in enumerate(distance)}
@@ -122,7 +122,7 @@ def reversibility_test(mechanism_fn: MechanismFn,
         image_sequence = [do_image]
         for do_parent in do_parent_cycle:
             do_parents = {**parents, parent_name: do_parent}
-            do_image = mechanism_fn(do_image, parents, do_parents)
+            do_image = mechanism_fn(rng, do_image, parents, do_parents)
             distance.append(distance_metric(image, do_image))
             image_sequence.append(do_image)
             parents = do_parents

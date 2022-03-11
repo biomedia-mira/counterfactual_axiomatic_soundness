@@ -13,10 +13,8 @@ from components.stax_extension import stax_wrapper
 
 # [[[image, parents]], [score, output]]
 ClassifierFn = Callable[[Tuple[Array, Array]], Tuple[Array, Any]]
-# [[params, image, parent, do_parent], do_image]
-UncompiledMechanismFn = Callable[[Params, Array, Dict[str, Array], Dict[str, Array]], Array]
 # [[image, parents, do_parents], do_image]
-MechanismFn = Callable[[Array, Dict[str, Array], Dict[str, Array]], Array]
+MechanismFn = Callable[[KeyArray, Array, Dict[str, Array], Dict[str, Array]], Array]
 
 
 def l2(x: Array) -> Array:
@@ -88,7 +86,7 @@ def functional_counterfactual(do_parent_name: str,
                               is_invertible: Dict[str, bool],
                               condition_divergence_on_parents: bool = True,
                               constraint_function_power: int = 1,
-                              from_joint: bool = True) -> Tuple[Model, UncompiledMechanismFn]:
+                              from_joint: bool = True) -> Tuple[Model, Callable[[Params], MechanismFn]]:
     assert len(parent_dims) > 0
     assert do_parent_name in ['all', *parent_dims.keys()]
     assert parent_dims.keys() == classifiers.keys() == is_invertible.keys() == marginal_dists.keys()
@@ -97,8 +95,8 @@ def functional_counterfactual(do_parent_name: str,
     source_dist = frozenset() if from_joint else frozenset(parent_dims.keys())
     target_dist = frozenset(do_parent_names) if from_joint else frozenset(parent_dims.keys())
     input_layer = condition_on_parents(parent_dims) if condition_divergence_on_parents else stax_wrapper(lambda x: x[0])
-    divergence_layers = serial(input_layer, *critic_layers, Flatten, Dense(1))
-    divergence_init_fn, divergence_apply_fn = f_gan(divergence_layers, mode='gan', trick_g=True)
+    critic = serial(input_layer, *critic_layers, Flatten, Dense(1))
+    divergence_init_fn, divergence_apply_fn = f_gan(critic, mode='gan', trick_g=True)
     mechanism_init_fn, mechanism_apply_fn = mechanism(do_parent_names, parent_dims, mechanism_encoder_layers,
                                                       mechanism_decoder_layers)
     _is_invertible = all([is_invertible[parent_name] for parent_name in do_parent_names])
@@ -169,4 +167,9 @@ def functional_counterfactual(do_parent_name: str,
 
         return opt_init(params), update, get_params
 
-    return (init_fn, apply_fn, init_optimizer_fn), mechanism_apply_fn
+    def get_mechanism_fn(params: Params) -> MechanismFn:
+        def mechanism_fn(rng: KeyArray, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
+            return mechanism_apply_fn(params, image, parents, do_parents)
+        return mechanism_fn
+
+    return (init_fn, apply_fn, init_optimizer_fn), get_mechanism_fn

@@ -114,7 +114,7 @@ def run_experiment(job_dir: Path,
         # train (partial) mechanisms
         mechanisms: Dict[str, MechanismFn] = {}
         for parent_name in (parent_names if partial_mechanisms else ['all']):
-            model, mechanism_apply_fn = functional_counterfactual(do_parent_name=parent_name,
+            model, get_mechanism_fn = functional_counterfactual(do_parent_name=parent_name,
                                                                   parent_dims=parent_dims,
                                                                   classifiers=classifiers,
                                                                   critic_layers=layers,
@@ -138,7 +138,7 @@ def run_experiment(job_dir: Path,
                            log_every=1,
                            eval_every=250,
                            save_every=250)
-            mechanisms[parent_name] = compile_fn(mechanism_apply_fn, params[1])
+            mechanisms[parent_name] = get_mechanism_fn(params)
 
         mechanisms = dict.fromkeys(parent_names, mechanisms['all']) if not partial_mechanisms else mechanisms
 
