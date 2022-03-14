@@ -104,7 +104,7 @@ def functional_counterfactual(do_parent_name: str,
     def sampling_fn(rng: KeyArray, sample_shape: Shape, parents: Dict[str, Array]) -> Tuple[Array, Optional[Array]]:
         new_parents = {p_name: marginal_dists[p_name].sample(rng, sample_shape) for p_name in do_parent_names}
         do_parents = {**parents, **new_parents}
-        order = None if do_parent_name == 'all' else jnp.argsort(jnp.argmax(do_parents[do_parent_name], axis=-1))
+        order = ... if do_parent_name == 'all' else jnp.argsort(jnp.argmax(do_parents[do_parent_name], axis=-1))
         return do_parents, order
 
     def init_fn(rng: KeyArray, input_shape: Shape) -> Params:
