@@ -146,8 +146,8 @@ def perform_tests(job_dir: Path,
     parent_names = mechanism_fns.keys()
 
     tests: Dict[str, Dict[str, Test]] = {parent_name: {} for parent_name in parent_names}
-    for parent_name, mechanism_fn in mechanism_fns.items():
-        marginal = marginals[parent_name]
+    for parent_name, marginal in marginals.items():
+        mechanism_fn = mechanism_fns[parent_name] if parent_name in mechanism_fns else mechanism_fns['all']
         tests[parent_name]['effectiveness'] = effectiveness_test(mechanism_fn, parent_name, marginal, pseudo_oracles)
         tests[parent_name]['composition'] = composition_test(mechanism_fn)
         if is_invertible[parent_name]:

@@ -11,7 +11,7 @@ from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu
 from components.stax_extension import PixelNorm2D, ResBlock, Reshape
 from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario
 from identifiability_tests import perform_tests, print_test_results
-from models import ClassifierFn, MechanismFn, classifier, functional_counterfactual
+from models import ClassifierFn, MechanismFn, classifier, functional_counterfactual, vae_gan
 from trainer import train
 from utils import compile_fn, prep_classifier_data, prep_mechanism_data
 
@@ -33,14 +33,24 @@ mechanism_encoder_layers = \
      Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
      Reshape((-1, 7 * 7 * 128)), Dense(1024), LeakyRelu)
 
+# mechanism_decoder_layers = \
+#     (Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
+#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+#      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Tanh)
+
+
 mechanism_decoder_layers = \
     (Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-     Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Tanh)
+     Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'))
 
-schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
+base_lr = 1e-4
+schedule = optimizers.piecewise_constant(boundaries=[5000, 10000], values=[base_lr, base_lr / 2, base_lr / 8])
 mechanism_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
+# schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-5, 1e-5 / 2, 1e-5 / 8])
+# mechanism_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
 
 
 def run_experiment(job_dir: Path,
@@ -48,6 +58,7 @@ def run_experiment(job_dir: Path,
                    scenario_name: str,
                    overwrite: bool,
                    seeds: List[int],
+                   baseline: bool,
                    partial_mechanisms: bool,
                    confound: bool,
                    de_confound: bool,
@@ -75,7 +86,7 @@ def run_experiment(job_dir: Path,
                        test_data=test_data,
                        input_shape=input_shape,
                        optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
-                       num_steps=2000,
+                       num_steps=20,  # 2000,
                        log_every=1,
                        eval_every=50,
                        save_every=50)
@@ -105,7 +116,7 @@ def run_experiment(job_dir: Path,
                            test_data=test_data,
                            input_shape=input_shape,
                            optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
-                           num_steps=2000,
+                           num_steps=20,  # 2000,
                            log_every=1,
                            eval_every=50,
                            save_every=50)
@@ -113,18 +124,27 @@ def run_experiment(job_dir: Path,
 
         # train (partial) mechanisms
         mechanisms: Dict[str, MechanismFn] = {}
-        for parent_name in (parent_names if partial_mechanisms else ['all']):
-            model, get_mechanism_fn = functional_counterfactual(do_parent_name=parent_name,
-                                                                  parent_dims=parent_dims,
-                                                                  classifiers=classifiers,
-                                                                  critic_layers=layers,
-                                                                  marginal_dists=marginals,
-                                                                  mechanism_encoder_layers=mechanism_encoder_layers,
-                                                                  mechanism_decoder_layers=mechanism_decoder_layers,
-                                                                  is_invertible=is_invertible,
-                                                                  condition_divergence_on_parents=True,
-                                                                  constraint_function_power=constraint_function_power,
-                                                                  from_joint=from_joint)
+        for parent_name in (parent_names if partial_mechanisms and not baseline else ['all']):
+            if baseline:
+                model, get_mechanism_fn = vae_gan(parent_dims=parent_dims,
+                                                  latent_dim=64,
+                                                  critic_layers=layers,
+                                                  encoder_layers=mechanism_encoder_layers,
+                                                  decoder_layers=mechanism_decoder_layers,
+                                                  condition_divergence_on_parents=True,
+                                                  from_joint=from_joint)
+            else:
+                model, get_mechanism_fn = functional_counterfactual(do_parent_name=parent_name,
+                                                                    parent_dims=parent_dims,
+                                                                    classifiers=classifiers,
+                                                                    critic_layers=layers,
+                                                                    marginal_dists=marginals,
+                                                                    mechanism_encoder_layers=mechanism_encoder_layers,
+                                                                    mechanism_decoder_layers=mechanism_decoder_layers,
+                                                                    is_invertible=is_invertible,
+                                                                    condition_divergence_on_parents=True,
+                                                                    constraint_function_power=constraint_function_power,
+                                                                    from_joint=from_joint)
             train_data, test_data = prep_mechanism_data(parent_name, parent_names, from_joint, train_datasets,
                                                         test_dataset, batch_size=512)
             params = train(model=model,
@@ -134,11 +154,11 @@ def run_experiment(job_dir: Path,
                            test_data=test_data,
                            input_shape=input_shape,
                            optimizer=mechanism_optimizer,
-                           num_steps=5000,
+                           num_steps=20000,
                            log_every=1,
                            eval_every=250,
                            save_every=250)
-            mechanisms[parent_name] = get_mechanism_fn(params)
+            mechanisms[parent_name] = get_mechanism_fn(params[1])
 
         mechanisms = dict.fromkeys(parent_names, mechanisms['all']) if not partial_mechanisms else mechanisms
 
@@ -163,7 +183,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     run_experiment(args.job_dir, args.data_dir, args.scenario_name, args.overwrite, args.seeds,
-                   partial_mechanisms=True, confound=True, de_confound=True, constraint_function_power=1)
+                   partial_mechanisms=True, baseline=True, confound=True, de_confound=True, constraint_function_power=1)
+
 # for confound, de_confound, constraint_function_exponent in product(*parameter_space.values()):
 #     if not confound and de_confound:
 #         continue

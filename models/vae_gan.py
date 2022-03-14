@@ -3,7 +3,7 @@ from typing import Any, Callable, Dict, Sequence, Tuple
 import jax.numpy as jnp
 from jax import jit, random, tree_map, value_and_grad, vmap
 from jax.experimental.optimizers import Optimizer, OptimizerState, ParamsFn
-from jax.experimental.stax import Dense, Flatten, Softplus, parallel, serial, FanOut
+from jax.experimental.stax import Dense, Flatten, Softplus, parallel, serial, FanOut, Exp
 
 from components import Array, KeyArray, Model, Params, Shape, StaxLayer, UpdateFn
 from components.f_gan import f_gan
@@ -18,19 +18,17 @@ def standard_vae(parent_dims: Dict[str, int],
     """ Implements VAE with independent normal posterior, standard normal prior and, standard normal likelihood (l2)"""
     assert len(parent_dims) > 0
     enc_init_fn, enc_apply_fn = serial(*encoder_layers, Flatten, FanOut(2),
-                                       parallel(Dense(latent_dim), serial(Dense(latent_dim), Softplus)))
+                                       parallel(Dense(latent_dim), serial(Dense(latent_dim), Exp)))
     dec_init_fn, dec_apply_fn = serial(*decoder_layers)
 
-    def gaussian_kl(mu, sigmasq):
-        """KL divergence from a diagonal Gaussian to the standard Gaussian."""
-        return -0.5 * jnp.sum(1. + jnp.log(sigmasq) - mu ** 2. - sigmasq)
+    def kl(mu, variance):
+        return jnp.mean(0.5 * jnp.sum(variance + mu ** 2. - 1. - jnp.log(variance), axis=-1))
 
-    def gaussian_sample(rng, mu, sigmasq):
-        """Sample a diagonal Gaussian."""
-        return mu + jnp.sqrt(sigmasq) * random.normal(rng, mu.shape)
+    def rsample(rng, mu, variance):
+        return mu + jnp.sqrt(variance) * random.normal(rng, mu.shape)
 
-    def l2(x: Array) -> Array:
-        return vmap(lambda arr: jnp.linalg.norm(jnp.ravel(arr), ord=2))(x)
+    def log_pdf(image, recon) -> Array:
+        return jnp.mean(vmap(lambda x, y: -jnp.sum((x - y) ** 2.))(image, recon))
 
     def init_fn(rng: KeyArray, input_shape: Shape) -> Tuple[Shape, Params]:
         c_dim = sum(parent_dims.values())
@@ -42,14 +40,14 @@ def standard_vae(parent_dims: Dict[str, int],
             -> Tuple[Array, Array, Dict[str, Array]]:
         enc_params, dec_params = params
         mean_z, variance_z = enc_apply_fn(enc_params, image)
-        z = gaussian_sample(rng, mean_z, variance_z)
+        z = rsample(rng, mean_z, variance_z)
         _parents = [parents[parent_name] for parent_name in sorted(parent_dims.keys())]
         latent_code = jnp.concatenate((z, *_parents), axis=-1)
         recon = dec_apply_fn(dec_params, latent_code)
-        recon_loss = jnp.mean(l2(image - recon))
-        kl_loss = gaussian_kl(mean_z, variance_z)
-        loss = recon_loss - kl_loss
-        return loss, recon, {'recon': recon, 'recon_loss': recon_loss, 'kl_loss': kl_loss}
+        recon_loss = log_pdf(image, recon)
+        kl_loss = kl(mean_z, variance_z)
+        elbo = recon_loss - kl_loss
+        return elbo, recon, {'recon': recon, 'recon_loss': recon_loss, 'kl_loss': kl_loss, 'elbo': elbo}
 
     return init_fn, apply_fn
 
@@ -77,9 +75,9 @@ def vae_gan(parent_dims: Dict[str, int],
     def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Tuple[Array, Any]:
         gan_params, vae_params = params
         (image, parents) = inputs[source_dist]
-        vae_loss, recon, vae_output = vae_apply_fn(vae_params, rng, image, parents)
+        elbo, recon, vae_output = vae_apply_fn(vae_params, rng, image, parents)
         gan_loss, gan_output = gan_apply_fn(gan_params, inputs[target_dist], (recon, parents))
-        loss = vae_loss + gan_loss
+        loss = -elbo  + gan_loss
         output = {'image': image, 'loss': loss[jnp.newaxis], **vae_output, **gan_output}
         return loss, output
 
