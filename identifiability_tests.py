@@ -143,8 +143,12 @@ def perform_tests(job_dir: Path,
                   test_set: Any,
                   plot: bool = True) -> TestResult:
     assert pseudo_oracles.keys() == is_invertible.keys() == marginals.keys()
-    parent_names = mechanism_fns.keys()
+    results_path = (job_dir / 'results.pickle')
+    if results_path.exists():
+        with open(results_path, mode='rb') as f:
+            return pickle.load(f)
 
+    parent_names = marginals.keys()
     tests: Dict[str, Dict[str, Test]] = {parent_name: {} for parent_name in parent_names}
     for parent_name, marginal in marginals.items():
         mechanism_fn = mechanism_fns[parent_name] if parent_name in mechanism_fns else mechanism_fns['all']

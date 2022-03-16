@@ -15,7 +15,11 @@ from models import MarginalDistribution
 IMAGE = NDArray[np.uint8]
 ConfoundingFn = Callable[[IMAGE, int], Tuple[IMAGE, int]]
 Scenario = Tuple[
-    Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, int], Dict[str, bool], Dict[str, MarginalDistribution], Shape]
+    Dict[FrozenSet[str], tf.data.Dataset],
+    tf.data.Dataset, Dict[str, int],
+    Dict[str, bool],
+    Dict[str, MarginalDistribution],
+    Shape]
 
 
 def image_gallery(array: NDArray, ncols: int = 16, num_images_to_display: int = 128,
