@@ -142,7 +142,7 @@ def show_images(dataset: tf.data.Dataset, title: str) -> None:
     order = np.argsort(np.argmax(data[1]['digit'], axis=-1))
     plt.imshow(image_gallery(data[0].numpy()[order], num_images_to_display=128))
     plt.title(title)
-    plt.show()
+    plt.show(block=False)
 
 
 def create_confounded_mnist_dataset(data_dir: Path,

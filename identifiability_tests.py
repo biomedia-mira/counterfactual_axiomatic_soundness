@@ -65,7 +65,7 @@ def plot_and_save(image: NDArray, path: Path) -> None:
     plt.imshow(image)
     plt.axis('off')
     plt.savefig(path, bbox_inches='tight', pad_inches=0)
-    plt.show()
+    plt.show(block=False)
 
 
 def effectiveness_test(mechanism_fn: MechanismFn,

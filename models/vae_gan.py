@@ -98,7 +98,7 @@ def vae_gan(parent_dims: Dict[str, int],
 
     def get_mechanism_fn(params: Params) -> MechanismFn:
         def mechanism_fn(rng: KeyArray, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
-            return vae_apply_fn(params, rng, image, do_parents)
+            return vae_apply_fn(params[1], rng, image, do_parents)[1]
 
         return mechanism_fn
 

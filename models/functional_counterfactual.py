@@ -169,7 +169,7 @@ def functional_counterfactual(do_parent_name: str,
 
     def get_mechanism_fn(params: Params) -> MechanismFn:
         def mechanism_fn(rng: KeyArray, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
-            return mechanism_apply_fn(params, image, parents, do_parents)
+            return mechanism_apply_fn(params[1], image, parents, do_parents)
         return mechanism_fn
 
     return (init_fn, apply_fn, init_optimizer_fn), get_mechanism_fn

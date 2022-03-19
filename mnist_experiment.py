@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast, Dict, List
 
-import matplotlib
 import numpy as np
 import tensorflow as tf
 from jax.experimental import optimizers
@@ -125,7 +124,7 @@ def get_mechanisms(job_dir: Path,
                            log_every=1,
                            eval_every=250,
                            save_every=250)
-        mechanisms[parent_name] = get_mechanism_fn(params[1])
+        mechanisms[parent_name] = get_mechanism_fn(params)
     return mechanisms
 
 
@@ -183,11 +182,8 @@ if __name__ == '__main__':
     parser.add_argument('--scenario-name', dest='scenario_name', type=str, help='Name of scenario to run.')
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
     parser.add_argument('--seeds', dest='seeds', nargs="+", type=int, help='list of random seeds')
-    parser.add_argument('--tkagg', action='store_true', help='whether to use tkagg for matplotlib', default=False)
 
     args = parser.parse_args()
-    if args.tkagg:
-        matplotlib.use('tkagg')
 
     configs = [Config(baseline=False, partial_mechanisms=True, constraint_function_power=1),
                Config(baseline=False, partial_mechanisms=False, constraint_function_power=1),
