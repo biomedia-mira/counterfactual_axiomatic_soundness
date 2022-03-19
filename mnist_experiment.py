@@ -181,9 +181,15 @@ if __name__ == '__main__':
     parser.add_argument('--data-dir', dest='data_dir', type=Path, help='data-dir where files will be saved')
     parser.add_argument('--scenario-name', dest='scenario_name', type=str, help='Name of scenario to run.')
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
+    parser.add_argument('--confound_off', action='store_true', help='if passed confounding is turned off')
     parser.add_argument('--seeds', dest='seeds', nargs="+", type=int, help='list of random seeds')
 
     args = parser.parse_args()
+
+    if args.confound_off:
+        confound, de_confound = False, False
+    else:
+        confound, de_confound = True, True
 
     configs = [Config(baseline=False, partial_mechanisms=True, constraint_function_power=1),
                Config(baseline=False, partial_mechanisms=False, constraint_function_power=1),
@@ -199,4 +205,8 @@ if __name__ == '__main__':
                        args.seeds,
                        baseline=config.baseline,
                        partial_mechanisms=config.partial_mechanisms,
-                       constraint_function_power=config.constraint_function_power)
+                       constraint_function_power=config.constraint_function_power,
+                       confound=confound,
+                       de_confound=de_confound)
+
+
