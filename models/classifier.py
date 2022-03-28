@@ -2,9 +2,9 @@ from typing import Any, Callable, Dict, Sequence, Tuple
 
 import jax.numpy as jnp
 from jax import jit, value_and_grad
-from jax.experimental import stax
-from jax.experimental.optimizers import Optimizer, OptimizerState
-from jax.experimental.stax import Dense, Flatten, LogSoftmax
+from jax.example_libraries import stax
+from jax.example_libraries.optimizers import Optimizer, OptimizerState
+from jax.example_libraries.stax import Dense, Flatten, LogSoftmax
 
 from components import Array, KeyArray, Model, Params, StaxLayer, UpdateFn
 

@@ -1,11 +1,11 @@
 from typing import Any, Callable, Tuple, Union
 
 import jax.numpy as jnp
-import numpy as np
-from jax.experimental.optimizers import OptimizerState, Params, ParamsFn, Optimizer
+from jax.example_libraries.optimizers import Optimizer, OptimizerState, Params, ParamsFn
 from jax.random import KeyArray
+from numpy.typing import NDArray
 
-Array = Union[jnp.ndarray, np.ndarray, Any]
+Array = Union[jnp.ndarray, NDArray, Any]
 Shape = Tuple[int, ...]
 InitFn = Callable[[KeyArray, Shape], Tuple[Shape, Params]]
 ApplyFn = Callable

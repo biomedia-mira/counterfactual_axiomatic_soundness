@@ -5,15 +5,16 @@ from typing import cast, Dict, List
 
 import numpy as np
 import tensorflow as tf
-from jax.experimental import optimizers
-from jax.experimental.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh
+from jax.example_libraries import optimizers
+from jax.example_libraries.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh
 
 from components.stax_extension import PixelNorm2D, ResBlock, Reshape, StaxLayer
 from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario, Scenario
-from identifiability_tests import perform_tests, print_test_results
+from identifiability_tests import evaluate, print_test_results
 from models import classifier, ClassifierFn, functional_counterfactual, MechanismFn, vae_gan
 from trainer import train
 from utils import compile_fn, prep_classifier_data, prep_mechanism_data
+from itertools import product
 
 tf.config.experimental.set_visible_devices([], 'GPU')
 
@@ -125,6 +126,7 @@ def get_mechanisms(job_dir: Path,
                            eval_every=250,
                            save_every=250)
         mechanisms[parent_name] = get_mechanism_fn(params)
+    mechanisms = {parent_name: mechanisms['all'] for parent_name in parent_names} if 'all' in mechanisms else mechanisms
     return mechanisms
 
 
@@ -163,7 +165,7 @@ def run_experiment(job_dir: Path,
                                     from_joint=from_joint,
                                     overwrite=overwrite)
 
-        results.append(perform_tests(seed_dir, mechanisms, is_invertible, marginals, pseudo_oracles, test_dataset))
+        results.append(evaluate(seed_dir, mechanisms, is_invertible, marginals, pseudo_oracles, test_dataset))
     print(job_name)
     print_test_results(results)
 
@@ -173,6 +175,8 @@ class Config:
     baseline: bool
     partial_mechanisms: bool
     constraint_function_power: int
+    confound: bool
+    de_confound: bool
 
 
 if __name__ == '__main__':
@@ -181,21 +185,12 @@ if __name__ == '__main__':
     parser.add_argument('--data-dir', dest='data_dir', type=Path, help='data-dir where files will be saved')
     parser.add_argument('--scenario-name', dest='scenario_name', type=str, help='Name of scenario to run.')
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
-    parser.add_argument('--confound_off', action='store_true', help='if passed confounding is turned off')
     parser.add_argument('--seeds', dest='seeds', nargs="+", type=int, help='list of random seeds')
 
     args = parser.parse_args()
-
-    if args.confound_off:
-        confound, de_confound = False, False
-    else:
-        confound, de_confound = True, True
-
-    configs = [Config(baseline=False, partial_mechanisms=True, constraint_function_power=1),
-               Config(baseline=False, partial_mechanisms=False, constraint_function_power=1),
-               Config(baseline=False, partial_mechanisms=True, constraint_function_power=3),
-               Config(baseline=False, partial_mechanisms=False, constraint_function_power=3),
-               Config(baseline=True, partial_mechanisms=False, constraint_function_power=1)]
+    configs = [Config(baseline, partial_mechanisms, constraint_function_power, confound, de_confound)
+               for baseline, partial_mechanisms, constraint_function_power, (confound, de_confound)
+               in product((False, True), (False, True), (1, 3), ((True, True), (False, False)))]
 
     for config in configs:
         run_experiment(args.job_dir,
@@ -206,7 +201,5 @@ if __name__ == '__main__':
                        baseline=config.baseline,
                        partial_mechanisms=config.partial_mechanisms,
                        constraint_function_power=config.constraint_function_power,
-                       confound=confound,
-                       de_confound=de_confound)
-
-
+                       confound=config.confound,
+                       de_confound=config.de_confound)

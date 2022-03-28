@@ -2,7 +2,7 @@ from typing import Any, Callable, Tuple, Union
 
 import jax
 import jax.numpy as jnp
-from jax.experimental.stax import Conv, LeakyRelu, ones, serial, zeros
+from jax.example_libraries.stax import Conv, LeakyRelu, ones, serial, zeros
 from jax.nn import normalize
 
 from components import Array, KeyArray, Params, Shape, StaxLayer

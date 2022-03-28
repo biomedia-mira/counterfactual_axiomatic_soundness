@@ -162,14 +162,14 @@ def create_confounded_mnist_dataset(data_dir: Path,
     train_data = train_data.map(encode_fn)
 
     test_data, _ = load_cached_dataset(dataset_dir / 'test', ds_test, test_confounding_fns, parent_dims)
-    test_data = test_data.map(encode_fn).shuffle(buffer_size=1000)
+    test_data = test_data.map(encode_fn)
     # Get unconfounded datasets by looking at the parents
     train_data_dict, marginals = get_marginal_datasets(train_data, train_parents, parent_dims)
     train_data_dict = train_data_dict if de_confound else dict.fromkeys(train_data_dict.keys(), train_data)
 
-    for key, dataset in train_data_dict.items():
-        show_images(dataset, f'train set {str(key)}')
-    show_images(test_data, f'test set')
+    # for key, dataset in train_data_dict.items():
+    #     show_images(dataset, f'train set {str(key)}')
+    # show_images(test_data, f'test set')
 
     train_data_dict = {
         key: dataset.map(lambda image, parents: (random_crop_and_rescale(image, fractions=(.3, .3)), parents))

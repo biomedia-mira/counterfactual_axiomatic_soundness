@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.optimizers import Optimizer, Params
+from jax.example_libraries.optimizers import Optimizer, Params
 from tqdm import tqdm
 
 from components import Model, Shape

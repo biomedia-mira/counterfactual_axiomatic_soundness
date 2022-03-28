@@ -2,8 +2,8 @@ from typing import Any, Callable, Dict, Sequence, Tuple
 
 import jax.numpy as jnp
 from jax import jit, random, tree_map, value_and_grad, vmap
-from jax.experimental.optimizers import Optimizer, OptimizerState, ParamsFn
-from jax.experimental.stax import Dense, Flatten, Softplus, parallel, serial, FanOut, Exp
+from jax.example_libraries.optimizers import Optimizer, OptimizerState, ParamsFn
+from jax.example_libraries.stax import Dense, Flatten, Softplus, parallel, serial, FanOut, Exp
 
 from components import Array, KeyArray, Model, Params, Shape, StaxLayer, UpdateFn
 from components.f_gan import f_gan
