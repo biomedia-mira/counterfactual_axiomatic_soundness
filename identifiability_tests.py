@@ -186,9 +186,10 @@ def evaluate(job_dir: Path,
              marginals: Dict[str, MarginalDistribution],
              pseudo_oracles: Dict[str, ClassifierFn],
              test_set: Any,
-             num_batches_to_plot: int = 1) -> TestResult:
+             num_batches_to_plot: int = 1,
+             overwrite: bool = False) -> TestResult:
     results_path = (job_dir / 'results.pickle')
-    if results_path.exists():
+    if results_path.exists() and not overwrite:
         with open(results_path, mode='rb') as f:
             return pickle.load(f)
 

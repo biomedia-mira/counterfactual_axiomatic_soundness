@@ -38,9 +38,16 @@ mechanism_decoder_layers = \
      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Tanh)
 
-schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
-mechanism_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
+# mechanism_decoder_layers = \
+#     (Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
+#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+#      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'))
 
+# schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
+# mechanism_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
+#schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
+mechanism_optimizer = optimizers.adam(step_size=1e-4)
 
 def get_classifiers(job_dir: Path,
                     seed: int,
@@ -66,8 +73,7 @@ def get_classifiers(job_dir: Path,
                            num_steps=2000,
                            log_every=1,
                            eval_every=50,
-                           save_every=50,
-                           overwrite=overwrite)
+                           save_every=50)
         classifiers[parent_name] = compile_fn(fn=model[1], params=params)
 
     return classifiers
@@ -88,7 +94,7 @@ def get_mechanisms(job_dir: Path,
     for parent_name in (parent_names if partial_mechanisms and not baseline else ['all']):
         if baseline:
             model, get_mechanism_fn = vae_gan(parent_dims=parent_dims,
-                                              latent_dim=64,
+                                              latent_dim=16,
                                               critic_layers=layers,
                                               encoder_layers=mechanism_encoder_layers,
                                               decoder_layers=mechanism_decoder_layers,
@@ -148,7 +154,7 @@ def run_experiment(job_dir: Path,
     pseudo_oracle_dir = job_dir / scenario_name / 'pseudo_oracles'
     experiment_dir = job_dir / scenario_name / job_name
 
-    pseudo_oracles = get_classifiers(pseudo_oracle_dir, 100, scenario_fn(data_dir, False, False), overwrite)
+    pseudo_oracles = get_classifiers(pseudo_oracle_dir, 100, scenario_fn(data_dir, False, False), overwrite=False)
 
     scenario = scenario_fn(data_dir, confound, de_confound)
     train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
@@ -165,7 +171,8 @@ def run_experiment(job_dir: Path,
                                     from_joint=from_joint,
                                     overwrite=overwrite)
 
-        results.append(evaluate(seed_dir, mechanisms, is_invertible, marginals, pseudo_oracles, test_dataset))
+        results.append(evaluate(seed_dir, mechanisms, is_invertible, marginals, pseudo_oracles, test_dataset,
+                                overwrite=overwrite))
     print(job_name)
     print_test_results(results)
 
@@ -191,6 +198,8 @@ if __name__ == '__main__':
     configs = [Config(baseline, partial_mechanisms, constraint_function_power, confound, de_confound)
                for baseline, partial_mechanisms, constraint_function_power, (confound, de_confound)
                in product((False, True), (False, True), (1, 3), ((True, True), (False, False)))]
+
+    configs = [Config(True, False, 1, False, False)]
 
     for config in configs:
         run_experiment(args.job_dir,

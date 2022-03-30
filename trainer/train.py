@@ -22,12 +22,8 @@ def train(model: Model,
           num_steps: int,
           log_every: int,
           eval_every: int,
-          save_every: int,
-          overwrite: bool = False) -> Params:
+          save_every: int) -> Params:
     model_path = job_dir / f'model.npy'
-    if model_path.exists() and not overwrite:
-        return np.load(str(model_path), allow_pickle=True)
-
     job_dir.mkdir(exist_ok=True, parents=True)
     train_writer = get_writer_fn(job_dir, 'train')
     test_writer = get_writer_fn(job_dir, 'test')

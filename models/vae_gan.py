@@ -1,14 +1,20 @@
+from functools import partial
 from typing import Any, Callable, Dict, Sequence, Tuple
 
+import jax
 import jax.numpy as jnp
 from jax import jit, random, tree_map, value_and_grad, vmap
 from jax.example_libraries.optimizers import Optimizer, OptimizerState, ParamsFn
-from jax.example_libraries.stax import Dense, Flatten, Softplus, parallel, serial, FanOut, Exp
+from jax.example_libraries.stax import Conv, Relu, Tanh
+from jax.example_libraries.stax import Dense, FanInConcat, FanOut, Flatten, LeakyRelu, parallel, serial, Softplus, \
+    Sigmoid
+from jax.image import resize
 
 from components import Array, KeyArray, Model, Params, Shape, StaxLayer, UpdateFn
 from components.f_gan import f_gan
-from components.stax_extension import stax_wrapper
-from models.functional_counterfactual import MechanismFn, condition_on_parents
+from components.stax_extension import Reshape, stax_wrapper
+from models.functional_counterfactual import condition_on_parents, MechanismFn
+from jax.tree_util import tree_reduce
 
 
 def standard_vae(parent_dims: Dict[str, int],
@@ -17,37 +23,69 @@ def standard_vae(parent_dims: Dict[str, int],
                  decoder_layers: Sequence[StaxLayer]) -> StaxLayer:
     """ Implements VAE with independent normal posterior, standard normal prior and, standard normal likelihood (l2)"""
     assert len(parent_dims) > 0
-    enc_init_fn, enc_apply_fn = serial(*encoder_layers, Flatten, FanOut(2),
-                                       parallel(Dense(latent_dim), serial(Dense(latent_dim), Exp)))
-    dec_init_fn, dec_apply_fn = serial(*decoder_layers)
+    hidden_dim = 128
 
-    def kl(mu, variance):
-        return jnp.mean(0.5 * jnp.sum(variance + mu ** 2. - 1. - jnp.log(variance), axis=-1))
+    def up_sample(new_shape: Shape) -> StaxLayer:
+        def init_fn(rng: KeyArray, input_shape: Shape) -> Tuple[Shape, Params]:
+            return new_shape, ()
 
-    def rsample(rng, mu, variance):
-        return mu + jnp.sqrt(variance) * random.normal(rng, mu.shape)
+        def apply_fn(params: Params, inputs: Array, **kwargs: Any) -> Array:
+            return vmap(partial(resize, shape=new_shape[1:], method='nearest'))(inputs)
 
-    def log_pdf(image, recon) -> Array:
-        return jnp.mean(vmap(lambda x, y: -jnp.sum((x - y) ** 2.))(image, recon))
+        return init_fn, apply_fn
+
+    n_channels = hidden_dim // 4
+    encoder_layers = (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+                      Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+                      Flatten, Dense(hidden_dim), LeakyRelu)
+    decoder_layers = (Dense(hidden_dim), Relu, Dense(n_channels * 7 * 7), Relu,
+                      Reshape((-1, 7, 7, n_channels)), up_sample((-1, 14, 14, n_channels)),
+                      Conv(n_channels, filter_shape=(5, 5), strides=(1, 1), padding='SAME'), Relu,
+                      up_sample((-1, 28, 28, n_channels)),
+                      Conv(n_channels, filter_shape=(5, 5), strides=(1, 1), padding='SAME'),
+                      Conv(3, filter_shape=(1, 1), strides=(1, 1), padding='SAME'), Sigmoid)
+
+    enc_init_fn, enc_apply_fn = serial(parallel(serial(*encoder_layers), stax_wrapper(lambda x: x)),
+                                       FanInConcat(axis=-1), Dense(hidden_dim), LeakyRelu, FanOut(2),
+                                       parallel(Dense(latent_dim), serial(Dense(latent_dim), Softplus)))
+    dec_init_fn, dec_apply_fn = serial(FanInConcat(axis=-1), *decoder_layers)
 
     def init_fn(rng: KeyArray, input_shape: Shape) -> Tuple[Shape, Params]:
+        k1, k2 = random.split(rng, 2)
         c_dim = sum(parent_dims.values())
-        (enc_output_shape, _), enc_params = enc_init_fn(rng, input_shape)
-        output_shape, dec_params = dec_init_fn(rng, (*enc_output_shape[:-1], enc_output_shape[-1] + c_dim))
+        (enc_output_shape, _), enc_params = enc_init_fn(k1, (input_shape, (-1, c_dim)))
+        output_shape, dec_params = dec_init_fn(k2, (enc_output_shape, (-1, c_dim)))
         return output_shape, (enc_params, dec_params)
+
+    @vmap
+    def _kl(mu: Array, variance: Array) -> Array:
+        return 0.5 * jnp.sum(variance + mu ** 2. - 1. - jnp.log(variance))
+
+    def rsample(rng: KeyArray, mu: Array, variance: Array) -> Array:
+        return mu + jnp.sqrt(variance) * random.normal(rng, mu.shape)
+
+    @vmap
+    def _log_pdf(image: Array, recon: Array, eps: float = 1e-5) -> Array:
+        return jnp.sum(image * jnp.log(recon + eps) + (1. - image) * jnp.log(1. - recon + eps))
+
+    # @vmap
+    # def log_pdf(image: Array, recon: Array, variance: float = .001) -> Array:
+    #     return -.5 * jnp.sum((image - recon) ** 2. / variance + jnp.log(2 * jnp.pi * variance))
 
     def apply_fn(params: Params, rng: KeyArray, image: Array, parents: Dict[str, Array]) \
             -> Tuple[Array, Array, Dict[str, Array]]:
+        image = (image + 1.) / 2.
         enc_params, dec_params = params
-        mean_z, variance_z = enc_apply_fn(enc_params, image)
+        _parents = jnp.concatenate([parents[parent_name] for parent_name in sorted(parent_dims.keys())], axis=-1)
+        mean_z, variance_z = enc_apply_fn(enc_params, (image, _parents))
+        variance_z = variance_z + 1e-5
         z = rsample(rng, mean_z, variance_z)
-        _parents = [parents[parent_name] for parent_name in sorted(parent_dims.keys())]
-        latent_code = jnp.concatenate((z, *_parents), axis=-1)
-        recon = dec_apply_fn(dec_params, latent_code)
-        recon_loss = log_pdf(image, recon)
-        kl_loss = kl(mean_z, variance_z)
-        elbo = recon_loss - kl_loss
-        return elbo, recon, {'recon': recon, 'recon_loss': recon_loss, 'kl_loss': kl_loss, 'elbo': elbo}
+        recon = dec_apply_fn(dec_params, (z, _parents))
+        log_pdf = _log_pdf(image, recon)
+        kl = _kl(mean_z, variance_z)
+        elbo = log_pdf - kl
+        recon = recon * 2. - 1.
+        return elbo, recon, {'recon': recon, 'log_pdf': log_pdf, 'kl': kl, 'elbo': elbo}
 
     return init_fn, apply_fn
 
@@ -77,7 +115,9 @@ def vae_gan(parent_dims: Dict[str, int],
         (image, parents) = inputs[source_dist]
         elbo, recon, vae_output = vae_apply_fn(vae_params, rng, image, parents)
         gan_loss, gan_output = gan_apply_fn(gan_params, inputs[target_dist], (recon, parents))
-        loss = -elbo  + gan_loss
+        # loss = -elbo + gan_loss
+        loss = jnp.mean(-elbo)  # + gan_loss
+        loss = loss + 1e-6 * tree_reduce(lambda x, y: x + y, tree_map(lambda x: jnp.sum(x ** 2), vae_params))
         output = {'image': image, 'loss': loss[jnp.newaxis], **vae_output, **gan_output}
         return loss, output
 
