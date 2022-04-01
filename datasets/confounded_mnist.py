@@ -8,14 +8,13 @@ import tensorflow_datasets as tfds
 from numpy.typing import NDArray
 from skimage import draw, morphology, transform
 
-from components.stax_extension import Shape
 from datasets.morphomnist import skeleton
 from datasets.morphomnist.morpho import ImageMorphology
 from datasets.utils import ConfoundingFn, get_marginal_datasets, IMAGE, image_gallery, load_cached_dataset
 from datasets.utils import get_diagonal_confusion_matrix, get_uniform_confusion_matrix
 from datasets.utils import MarginalDistribution
 from datasets.utils import Scenario
-
+from typing import Any
 
 def function_dict_to_confounding_fn(function_dict: Dict[int, Callable[[IMAGE], IMAGE]],
                                     cm: NDArray[np.float_]) -> ConfoundingFn:
@@ -130,7 +129,7 @@ def random_crop_and_rescale(image: tf.Tensor, fractions: Tuple[float, float] = (
 def get_encode_fn(parent_dims: Dict[str, int]) \
         -> Callable[[tf.Tensor, Dict[str, tf.Tensor]], Tuple[tf.Tensor, Dict[str, tf.Tensor]]]:
     def encode_fn(image: tf.Tensor, patents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
-        image = (tf.cast(image, tf.float32) - tf.constant(127.5)) / tf.constant(127.5)
+        image = (tf.cast(image, tf.float32)) / tf.constant(255.)
         patents = {parent: tf.one_hot(value, parent_dims[parent]) for parent, value in patents.items()}
         return image, patents
 
@@ -151,7 +150,7 @@ def create_confounded_mnist_dataset(data_dir: Path,
                                     test_confounding_fns: List[ConfoundingFn],
                                     parent_dims: Dict[str, int],
                                     de_confound: bool) \
-        -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, MarginalDistribution], Shape]:
+        -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, MarginalDistribution], Any]:
     input_shape = (-1, 28, 28, 3)
     ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False,
                                   data_dir=f'{str(data_dir)}/mnist', as_supervised=True)

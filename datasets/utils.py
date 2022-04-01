@@ -1,15 +1,28 @@
 import itertools
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, FrozenSet, List, Tuple
+from typing import Callable, Dict, FrozenSet, List, Tuple, Any
 
+import jax.numpy as jnp
+import jax.random as random
 import numpy as np
 import tensorflow as tf
 from more_itertools import powerset
 from numpy.typing import NDArray
 from tqdm import tqdm
 
-from components import Shape
-from models import MarginalDistribution
+
+@dataclass(frozen=True)
+class MarginalDistribution:
+    marginal_dist: NDArray
+
+    @property
+    def dim(self) -> int:
+        return self.marginal_dist.shape[0]
+
+    def sample(self, rng, sample_shape):
+        do_parent = random.choice(rng, self.dim, shape=sample_shape, p=self.marginal_dist)
+        return jnp.eye(self.dim)[do_parent]
 
 
 IMAGE = NDArray[np.uint8]
@@ -19,11 +32,11 @@ Scenario = Tuple[
     tf.data.Dataset, Dict[str, int],
     Dict[str, bool],
     Dict[str, MarginalDistribution],
-    Shape]
+    Any]
 
 
 def image_gallery(array: NDArray, ncols: int = 16, num_images_to_display: int = 128,
-                  decode_fn: Callable[[NDArray], NDArray] = lambda x: 127.5 * x + 127.5) -> NDArray:
+                  decode_fn: Callable[[NDArray], NDArray] = lambda x: 255. * x) -> NDArray:
     array = np.clip(decode_fn(array), a_min=0, a_max=255) / 255.
     array = array[::len(array) // num_images_to_display][:num_images_to_display]
     nindex, height, width, intensity = array.shape
