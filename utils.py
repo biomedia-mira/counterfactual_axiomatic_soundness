@@ -8,6 +8,17 @@ import tensorflow_datasets as tfds
 from components import Params
 
 
+def flatten_nested_dict(nested_dict: Dict, key: Tuple = ()) -> Dict:
+    new_dict = {}
+    for sub_key, value in nested_dict.items():
+        new_key = (*key, sub_key)
+        if isinstance(value, dict):
+            new_dict.update(flatten_nested_dict(value, new_key))
+        else:
+            new_dict.update({new_key: value})
+    return new_dict
+
+
 def to_numpy_iterator(data: tf.data.Dataset, batch_size: int, drop_remainder: bool = True) -> Any:
     return tfds.as_numpy(data.batch(batch_size, drop_remainder=drop_remainder).prefetch(tf.data.AUTOTUNE))
 

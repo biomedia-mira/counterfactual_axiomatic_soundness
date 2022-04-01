@@ -4,7 +4,6 @@ from typing import Iterable, Optional
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.example_libraries.optimizers import Optimizer, Params
 from tqdm import tqdm
 
@@ -39,7 +38,7 @@ def train(model: Model,
         rng, _ = jax.random.split(rng)
         opt_state, loss, output = update(step, opt_state, inputs, rng)
         if step % log_every == 0:
-            train_writer(output, step, None)
+            train_writer(output, step)
         if jnp.isnan(loss):
             raise ValueError('NaN loss!')
 
@@ -49,7 +48,7 @@ def train(model: Model,
                 rng, _ = jax.random.split(rng)
                 _, output = apply_fn(get_params(opt_state), test_inputs, rng=rng)
                 cum_output = accumulate_output(output, cum_output)
-            test_writer(cum_output, step, None)
+            test_writer(cum_output, step)
 
         if step % save_every == 0 or step == num_steps - 1:
             jnp.save(str(model_path), get_params(opt_state))
