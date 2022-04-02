@@ -1,7 +1,8 @@
 # https://arxiv.org/abs/1606.00709
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable, Dict, Sequence, Tuple
 
 import jax.numpy as jnp
+from jax.example_libraries.stax import Dense, Flatten, serial
 from jax.lax import stop_gradient
 
 from components import Array, Params, StaxLayer
@@ -98,8 +99,8 @@ def get_activation_and_f_conj(mode: str) -> FDivergence:
         raise ValueError(f'Unsupported divergence: {mode}.')
 
 
-def f_gan(critic: StaxLayer, mode: str = 'gan', trick_g: bool = False) -> StaxLayer:
-    init_fn, critic_apply_fn = critic
+def f_gan(critic: StaxLayer, mode: str = 'gan', trick_g: bool = False, critic_dim: int = 1) -> StaxLayer:
+    init_fn, critic_apply_fn = serial(critic, Flatten, Dense(critic_dim))
     activation, f_conj = get_activation_and_f_conj(mode)
 
     def calc_divergence(params: Params, p_sample: Array, q_sample: Array) -> Array:

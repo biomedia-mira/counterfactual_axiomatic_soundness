@@ -14,6 +14,7 @@ from components import Model, Shape
 from components.stax_extension import Array
 from datasets.utils import image_gallery
 from utils import flatten_nested_dict
+from queue import Queue
 
 
 def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str], None]] = None) \

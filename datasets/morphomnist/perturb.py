@@ -154,8 +154,8 @@ class Fracture(Perturbation):
         return frac_img[r:-r, r:-r]
 
     def _endpoints(self, morph, centre):
-        angle = skeleton.get_angle(morph.skeleton, *centre, self._ANGLE_WINDOW * morph.scale)
-        length = morph.distance_map[centre[0], centre[1]] + self._FRAC_EXTENSION * morph.scale
+        angle = skeleton.get_angle(morph.skeleton, *centre, self._ANGLE_WINDOW * morph.rescale)
+        length = morph.distance_map[centre[0], centre[1]] + self._FRAC_EXTENSION * morph.rescale
         angle += np.pi / 2.  # Perpendicular to the skeleton
         normal = length * np.array([np.sin(angle), np.cos(angle)])
         p0 = (centre + normal).astype(int)

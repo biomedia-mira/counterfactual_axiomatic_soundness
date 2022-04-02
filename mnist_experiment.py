@@ -1,20 +1,20 @@
 import argparse
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 from typing import cast, Dict, List
 
-import numpy as np
 import tensorflow as tf
 from jax.example_libraries import optimizers
-from jax.example_libraries.stax import Conv, ConvTranspose, Dense, Flatten, LeakyRelu, Tanh
+from jax.example_libraries.stax import Conv, Dense, FanInConcat, Flatten, LeakyRelu
 
-from components.stax_extension import PixelNorm2D, ResBlock, Reshape, StaxLayer
+from components.stax_extension import BroadcastTogether, ResBlock, Reshape, Resize, StaxLayer, PixelNorm2D
 from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario, Scenario
 from identifiability_tests import evaluate, print_test_results
 from models import classifier, ClassifierFn, functional_counterfactual, MechanismFn, vae_gan
 from train import train
 from utils import compile_fn, prep_classifier_data, prep_mechanism_data
-from itertools import product
+
 
 tf.config.experimental.set_visible_devices([], 'GPU')
 
@@ -27,16 +27,18 @@ layers = \
      ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
      cast(StaxLayer, Flatten), Dense(128), LeakyRelu)
 
-mechanism_encoder_layers = \
-    (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-     Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-     Reshape((-1, 7 * 7 * 128)), Dense(1024), LeakyRelu)
+critic_layers = (BroadcastTogether(-1), FanInConcat(-1), *layers)
 
-mechanism_decoder_layers = \
-    (Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
-     ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-     ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-     Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Tanh)
+# mechanism_encoder_layers = \
+#     (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+#      Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+#      Reshape((-1, 7 * 7 * 128)), Dense(1024), LeakyRelu)
+#
+# mechanism_decoder_layers = \
+#     (Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
+#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+#      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Tanh)
 
 # mechanism_decoder_layers = \
 #     (Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
@@ -44,11 +46,26 @@ mechanism_decoder_layers = \
 #      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
 #      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'))
 
-# schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
-# mechanism_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
-# schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
-mechanism_optimizer = optimizers.adam(step_size=1e-4)
 
+###
+hidden_dim = 256
+n_channels = 64
+
+mechanism_encoder_layers \
+    = (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+       Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+       cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
+
+mechanism_decoder_layers \
+    = (Dense(hidden_dim), LeakyRelu, Dense(n_channels * 7 * 7), LeakyRelu,
+       Reshape((-1, 7, 7, n_channels)), Resize((-1, 14, 14, n_channels)),
+       Conv(n_channels, filter_shape=(5, 5), strides=(1, 1), padding='SAME'), LeakyRelu,
+       Resize((-1, 28, 28, n_channels)),
+       Conv(3, filter_shape=(5, 5), strides=(1, 1), padding='SAME'), LeakyRelu,
+       Conv(3, filter_shape=(1, 1), strides=(1, 1), padding='SAME'))
+
+
+###
 
 def get_classifiers(job_dir: Path,
                     seed: int,
@@ -85,15 +102,14 @@ def get_baseline(job_dir: Path,
     parent_name = 'all'
     model, get_mechanism_fn = vae_gan(parent_dims=parent_dims,
                                       latent_dim=16,
-                                      critic_layers=layers,
+                                      critic_layers=critic_layers,
                                       encoder_layers=mechanism_encoder_layers,
                                       decoder_layers=mechanism_decoder_layers,
-                                      condition_divergence_on_parents=True,
                                       from_joint=from_joint)
     train_data, test_data = prep_mechanism_data(parent_name, parent_names, from_joint, train_datasets,
                                                 test_dataset, batch_size=512)
-    schedule = optimizers.piecewise_constant(boundaries=[5000, 8000], values=[1e-3, 1e-4, 1e-4 / 5])
-    optimizer = optimizers.adam(step_size=schedule)
+    # schedule = optimizers.piecewise_constant(boundaries=[5000, 8000], values=[1e-3, 1e-4, 1e-4 / 5])
+    optimizer = optimizers.adam(step_size=1e-3)
     params = train(model=model,
                    job_dir=job_dir / f'do_{parent_name}',
                    seed=seed,
@@ -131,11 +147,13 @@ def get_mechanisms(job_dir: Path,
                                                             mechanism_encoder_layers=mechanism_encoder_layers,
                                                             mechanism_decoder_layers=mechanism_decoder_layers,
                                                             is_invertible=is_invertible,
-                                                            condition_divergence_on_parents=True,
                                                             constraint_function_power=constraint_function_power,
                                                             from_joint=from_joint)
         train_data, test_data = prep_mechanism_data(parent_name, parent_names, from_joint, train_datasets,
                                                     test_dataset, batch_size=512)
+
+        schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
+        mechanism_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
         params = train(model=model,
                        job_dir=job_dir / f'do_{parent_name}',
                        seed=seed,
@@ -223,7 +241,7 @@ if __name__ == '__main__':
                for baseline, partial_mechanisms, constraint_function_power, (confound, de_confound)
                in product((False, True), (False, True), (1, 3), ((True, True), (False, False)))]
 
-    configs = [Config(True, False, 1, False, False)]
+    configs = [Config(False, False, 1, False, False)]
 
     for config in configs:
         run_experiment(args.job_dir,

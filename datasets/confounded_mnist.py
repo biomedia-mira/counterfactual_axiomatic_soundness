@@ -1,12 +1,14 @@
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, List, Tuple
 
+import jax
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from numpy.typing import NDArray
 from skimage import draw, morphology, transform
+from tensorflow.keras import layers
 
 from components.stax_extension import Shape
 from datasets.morphomnist import skeleton
@@ -114,19 +116,6 @@ def get_colourise_fn(cm: NDArray[np.float_]) -> ConfoundingFn:
     return apply_fn
 
 
-def tf_randint(minval: int, maxval: int, shape: Tuple = ()) -> tf.Tensor:
-    return tf.random.uniform(minval=minval, maxval=maxval, dtype=tf.int32, shape=shape)
-
-
-def random_crop_and_rescale(image: tf.Tensor, fractions: Tuple[float, float] = (.2, .2)) -> tf.Tensor:
-    shape = image.shape[:-1]
-    start = tuple(tf_randint(minval=0, maxval=int(s * fpd / 2.)) for s, fpd in zip(shape, fractions))
-    stop = tuple(tf_randint(minval=int(s * (1. - fpd / 2.)), maxval=s) for s, fpd in zip(shape, fractions))
-    slices = tuple((slice(_start, _stop) for _start, _stop in zip(start, stop)))
-    cropped_image = image[slices]
-    return tf.image.resize(cropped_image, size=shape)
-
-
 def get_encode_fn(parent_dims: Dict[str, int]) \
         -> Callable[[tf.Tensor, Dict[str, tf.Tensor]], Tuple[tf.Tensor, Dict[str, tf.Tensor]]]:
     def encode_fn(image: tf.Tensor, patents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
@@ -150,7 +139,8 @@ def create_confounded_mnist_dataset(data_dir: Path,
                                     train_confounding_fns: List[ConfoundingFn],
                                     test_confounding_fns: List[ConfoundingFn],
                                     parent_dims: Dict[str, int],
-                                    de_confound: bool) \
+                                    de_confound: bool,
+                                    plot: bool = False) \
         -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, MarginalDistribution], Shape]:
     input_shape = (-1, 28, 28, 3)
     ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False,
@@ -159,21 +149,22 @@ def create_confounded_mnist_dataset(data_dir: Path,
     encode_fn = get_encode_fn(parent_dims)
     dataset_dir = Path(f'{str(data_dir)}/{dataset_name}')
     train_data, train_parents = load_cached_dataset(dataset_dir / 'train', ds_train, train_confounding_fns, parent_dims)
-    train_data = train_data.map(encode_fn)
-
     test_data, _ = load_cached_dataset(dataset_dir / 'test', ds_test, test_confounding_fns, parent_dims)
-    test_data = test_data.map(encode_fn)
-    # Get unconfounded datasets by looking at the parents
+
     train_data_dict, marginals = get_marginal_datasets(train_data, train_parents, parent_dims)
     train_data_dict = train_data_dict if de_confound else dict.fromkeys(train_data_dict.keys(), train_data)
 
-    # for key, dataset in train_data_dict.items():
-    #     show_images(dataset, f'train set {str(key)}')
-    # show_images(test_data, f'test set')
+    def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
+        return layers.RandomCrop(28, 28)(tf.pad(image, ((2, 2), (2, 2), (0, 0)))), parents
 
-    train_data_dict = {
-        key: dataset.map(lambda image, parents: (random_crop_and_rescale(image, fractions=(.1, .1)), parents))
-        for key, dataset in train_data_dict.items()}
+    train_data_dict = jax.tree_map(lambda ds: ds.map(augment), train_data_dict)
+    train_data_dict = jax.tree_map(lambda ds: ds.map(encode_fn), train_data_dict)
+    test_data = test_data.map(encode_fn)
+
+    if plot:
+        for key, dataset in train_data_dict.items():
+            show_images(dataset, f'train set {str(key)}')
+        show_images(test_data, f'test set')
 
     return train_data_dict, test_data, marginals, input_shape
 

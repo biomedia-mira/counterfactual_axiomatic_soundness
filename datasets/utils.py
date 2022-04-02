@@ -1,19 +1,36 @@
 import itertools
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, List, Tuple
 
+import jax.numpy as jnp
+import jax.random as random
 import numpy as np
 import tensorflow as tf
 from more_itertools import powerset
 from numpy.typing import NDArray
 from tqdm import tqdm
 
+from components import Array, KeyArray
 from components import Shape
-from models import MarginalDistribution
-
 
 IMAGE = NDArray[np.uint8]
 ConfoundingFn = Callable[[IMAGE, int], Tuple[IMAGE, int]]
+
+
+@dataclass(frozen=True)
+class MarginalDistribution:
+    marginal_dist: NDArray
+
+    @property
+    def dim(self) -> int:
+        return self.marginal_dist.shape[0]
+
+    def sample(self, rng: KeyArray, sample_shape: Shape) -> Array:
+        do_parent = random.choice(rng, self.dim, shape=sample_shape, p=self.marginal_dist)
+        return jnp.eye(self.dim)[do_parent]
+
+
 Scenario = Tuple[
     Dict[FrozenSet[str], tf.data.Dataset],
     tf.data.Dataset, Dict[str, int],

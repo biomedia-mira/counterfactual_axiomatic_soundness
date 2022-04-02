@@ -1,15 +1,14 @@
-from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 import jax.numpy as jnp
-from jax import jit, random, tree_map, value_and_grad, vmap
+from jax import jit, tree_map, value_and_grad, vmap
 from jax.example_libraries.optimizers import Optimizer, OptimizerState, ParamsFn
-from jax.example_libraries.stax import Dense, Flatten, serial
-from numpy.typing import NDArray
+from jax.example_libraries.stax import serial, Tanh
 
 from components import Array, KeyArray, Model, Params, Shape, StaxLayer, UpdateFn
 from components.f_gan import f_gan
-from components.stax_extension import stax_wrapper
+from datasets.utils import MarginalDistribution
+from models.utils import concat_parents
 
 # [[[image, parents]], [score, output]]
 ClassifierFn = Callable[[Tuple[Array, Array]], Tuple[Array, Any]]
@@ -21,42 +20,23 @@ def l2(x: Array) -> Array:
     return vmap(lambda arr: jnp.linalg.norm(jnp.ravel(arr), ord=2))(x)
 
 
-@dataclass(frozen=True)
-class MarginalDistribution:
-    marginal_dist: NDArray
-
-    @property
-    def dim(self) -> int:
-        return self.marginal_dist.shape[0]
-
-    def sample(self, rng: KeyArray, sample_shape: Shape) -> Array:
-        do_parent = random.choice(rng, self.dim, shape=sample_shape, p=self.marginal_dist)
-        return jnp.eye(self.dim)[do_parent]
-
-
-def condition_on_parents(parent_dims: Dict[str, int]) -> StaxLayer:
-    def broadcast(array: Array, shape: Tuple[int, ...]) -> Array:
-        return jnp.broadcast_to(jnp.expand_dims(array, axis=tuple(range(1, 1 + len(shape) - array.ndim))), shape)
-
-    def init_fn(rng: KeyArray, shape: Shape) -> Tuple[Shape, Params]:
-        return (*shape[:-1], shape[-1] + sum(parent_dims.values())), ()
-
-    def apply_fn(params: Params, inputs: Any, **kwargs: Any) -> Array:
-        image, parents = inputs
-        shape = (*image.shape[:-1], sum(parent_dims.values()))
-        _parents = jnp.concatenate([parents[key] for key in parent_dims.keys()], axis=-1)
-        return jnp.concatenate((image, broadcast(_parents, shape)), axis=-1)
-
-    return init_fn, apply_fn
-
-
-# Behaves like a partial mechanism if the set of do_parent_names is smaller than parent_dims.keys()
 def mechanism(do_parent_names: Sequence[str],
               parent_dims: Dict[str, int],
               encoder_layers: Sequence[StaxLayer],
               decoder_layers: Sequence[StaxLayer]) -> StaxLayer:
+    """
+    Implements a
+    Expects input to be in the range of -1 to 1
+    Behaves like a partial mechanism if the set of do_parent_names is smaller than parent_dims.keys()
+
+    :param do_parent_names:
+    :param parent_dims:
+    :param encoder_layers:
+    :param decoder_layers:
+    :return:
+    """
     assert all([do_parent_name in parent_dims.keys() for do_parent_name in do_parent_names])
-    enc_init_fn, enc_apply_fn = serial(*encoder_layers)
+    enc_init_fn, enc_apply_fn = serial(*encoder_layers, Tanh)
     dec_init_fn, dec_apply_fn = serial(*decoder_layers)
 
     def init_fn(rng: KeyArray, input_shape: Shape) -> Tuple[Shape, Params]:
@@ -67,8 +47,8 @@ def mechanism(do_parent_names: Sequence[str],
 
     def apply_fn(params: Params, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
         enc_params, dec_params = params
-        _parents = [parents[parent_name] for parent_name in sorted(do_parent_names)]
-        _do_parents = [do_parents[parent_name] for parent_name in sorted(do_parent_names)]
+        _parents = concat_parents(parents)
+        _do_parents = concat_parents(do_parents)
         latent_code = jnp.concatenate([enc_apply_fn(enc_params, image), *_parents, *_do_parents], axis=-1)
         return dec_apply_fn(dec_params, latent_code)
 
@@ -84,7 +64,6 @@ def functional_counterfactual(do_parent_name: str,
                               mechanism_encoder_layers: Sequence[StaxLayer],
                               mechanism_decoder_layers: Sequence[StaxLayer],
                               is_invertible: Dict[str, bool],
-                              condition_divergence_on_parents: bool = True,
                               constraint_function_power: int = 1,
                               from_joint: bool = True) -> Tuple[Model, Callable[[Params], MechanismFn]]:
     assert len(parent_dims) > 0
@@ -94,9 +73,7 @@ def functional_counterfactual(do_parent_name: str,
     do_parent_names = tuple(parent_dims.keys()) if do_parent_name == 'all' else (do_parent_name,)
     source_dist = frozenset() if from_joint else frozenset(parent_dims.keys())
     target_dist = frozenset(do_parent_names) if from_joint else frozenset(parent_dims.keys())
-    input_layer = condition_on_parents(parent_dims) if condition_divergence_on_parents else stax_wrapper(lambda x: x[0])
-    critic = serial(input_layer, *critic_layers, Flatten, Dense(1))
-    divergence_init_fn, divergence_apply_fn = f_gan(critic, mode='gan', trick_g=True)
+    divergence_init_fn, divergence_apply_fn = f_gan(critic=serial(critic_layers), mode='gan', trick_g=True)
     mechanism_init_fn, mechanism_apply_fn = mechanism(do_parent_names, parent_dims, mechanism_encoder_layers,
                                                       mechanism_decoder_layers)
     _is_invertible = all([is_invertible[parent_name] for parent_name in do_parent_names])
@@ -170,6 +147,7 @@ def functional_counterfactual(do_parent_name: str,
     def get_mechanism_fn(params: Params) -> MechanismFn:
         def mechanism_fn(rng: KeyArray, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
             return mechanism_apply_fn(params[1], image, parents, do_parents)
+
         return mechanism_fn
 
     return (init_fn, apply_fn, init_optimizer_fn), get_mechanism_fn
