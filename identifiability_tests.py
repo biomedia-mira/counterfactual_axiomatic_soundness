@@ -13,21 +13,10 @@ from numpy.typing import NDArray
 
 from components import Array, KeyArray
 from models import ClassifierFn, MarginalDistribution, MechanismFn
-from utils import to_numpy_iterator
+from utils import flatten_nested_dict, to_numpy_iterator
 
 TestResult = Dict[str, Union['TestResult', NDArray]]
 Test = Callable[[KeyArray, Array, Dict[str, Array]], Tuple[TestResult, NDArray]]
-
-
-def flatten_nested_dict(nested_dict: Dict, key: Tuple = ()) -> Dict:
-    new_dict = {}
-    for sub_key, value in nested_dict.items():
-        new_key = (*key, sub_key)
-        if isinstance(value, dict):
-            new_dict.update(flatten_nested_dict(value, new_key))
-        else:
-            new_dict.update({new_key: value})
-    return new_dict
 
 
 def decode_fn(x: NDArray) -> NDArray:

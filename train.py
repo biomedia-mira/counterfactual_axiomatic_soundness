@@ -1,14 +1,46 @@
 import itertools
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Callable, Dict, Optional
+from typing import Iterable
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+from clu.metric_writers import create_default_writer
 from jax.example_libraries.optimizers import Optimizer, Params
 from tqdm import tqdm
 
 from components import Model, Shape
-from trainer.logger import accumulate_output, get_writer_fn
+from components.stax_extension import Array
+from datasets.utils import image_gallery
+from utils import flatten_nested_dict
+
+
+def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str], None]] = None) \
+        -> Callable[[Dict, int], None]:
+    logdir = (job_dir / 'logs' / name)
+    logdir.mkdir(exist_ok=True, parents=True)
+    writer = create_default_writer(str(logdir))
+
+    def writer_fn(evaluation: Dict, step: int) -> None:
+        flat = flatten_nested_dict(evaluation)
+        scalars = {'/'.join(key): jnp.mean(value) for key, value in flat.items() if value.ndim <= 1}
+        images = {'/'.join(key): image_gallery(value, num_images_to_display=min(128, value.shape[0]))[np.newaxis]
+                  for key, value in flat.items() if value.ndim == 4}
+        writer.write_scalars(step, scalars)
+        writer.write_images(step, images)
+        if logging_fn is not None:
+            [logging_fn(f'epoch: {step:d}: \t{key}: {value:.2f}') for key, value in scalars.items()]
+
+    return writer_fn
+
+
+def accumulate_output(new_output: Any, cum_output: Optional[Any]) -> Any:
+    def update_value(value: Array, new_value: Array) -> Array:
+        return value + new_value if value.ndim == 0 \
+            else (jnp.concatenate((value, new_value)) if value.ndim == 1 else new_value)
+
+    return new_output if cum_output is None else jax.tree_multimap(update_value, cum_output, new_output)
 
 
 def train(model: Model,
@@ -21,8 +53,11 @@ def train(model: Model,
           num_steps: int,
           log_every: int,
           eval_every: int,
-          save_every: int) -> Params:
+          save_every: int,
+          overwrite: bool) -> Params:
     model_path = job_dir / f'model.npy'
+    if model_path.exists() and not overwrite:
+        return np.load(str(model_path), allow_pickle=True)
     job_dir.mkdir(exist_ok=True, parents=True)
     train_writer = get_writer_fn(job_dir, 'train')
     test_writer = get_writer_fn(job_dir, 'test')

@@ -172,7 +172,7 @@ def create_confounded_mnist_dataset(data_dir: Path,
     # show_images(test_data, f'test set')
 
     train_data_dict = {
-        key: dataset.map(lambda image, parents: (random_crop_and_rescale(image, fractions=(.3, .3)), parents))
+        key: dataset.map(lambda image, parents: (random_crop_and_rescale(image, fractions=(.1, .1)), parents))
         for key, dataset in train_data_dict.items()}
 
     return train_data_dict, test_data, marginals, input_shape

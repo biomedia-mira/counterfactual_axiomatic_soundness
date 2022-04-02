@@ -12,7 +12,7 @@ from components.stax_extension import PixelNorm2D, ResBlock, Reshape, StaxLayer
 from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario, Scenario
 from identifiability_tests import evaluate, print_test_results
 from models import classifier, ClassifierFn, functional_counterfactual, MechanismFn, vae_gan
-from trainer import train
+from train import train
 from utils import compile_fn, prep_classifier_data, prep_mechanism_data
 from itertools import product
 
@@ -46,8 +46,9 @@ mechanism_decoder_layers = \
 
 # schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
 # mechanism_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
-#schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
+# schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
 mechanism_optimizer = optimizers.adam(step_size=1e-4)
+
 
 def get_classifiers(job_dir: Path,
                     seed: int,
@@ -56,27 +57,57 @@ def get_classifiers(job_dir: Path,
     train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
     classifiers: Dict[str, ClassifierFn] = {}
     for parent_name, parent_dim in parent_dims.items():
-        job_subdir = job_dir / parent_name
         model = classifier(num_classes=parent_dims[parent_name], layers=layers)
-        model_path = job_subdir / f'model.npy'
-        if model_path.exists() and not overwrite:
-            params = np.load(str(model_path), allow_pickle=True)
-        else:
-            train_data, test_data = prep_classifier_data(parent_name, train_datasets, test_dataset, batch_size=1024)
-            params = train(model=model,
-                           job_dir=job_subdir,
-                           seed=seed,
-                           train_data=train_data,
-                           test_data=test_data,
-                           input_shape=input_shape,
-                           optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
-                           num_steps=2000,
-                           log_every=1,
-                           eval_every=50,
-                           save_every=50)
+        train_data, test_data = prep_classifier_data(parent_name, train_datasets, test_dataset, batch_size=1024)
+        params = train(model=model,
+                       job_dir=job_dir / parent_name,
+                       seed=seed,
+                       train_data=train_data,
+                       test_data=test_data,
+                       input_shape=input_shape,
+                       optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
+                       num_steps=2000,
+                       log_every=1,
+                       eval_every=50,
+                       save_every=50,
+                       overwrite=overwrite)
         classifiers[parent_name] = compile_fn(fn=model[1], params=params)
-
     return classifiers
+
+
+def get_baseline(job_dir: Path,
+                 seed: int,
+                 scenario: Scenario,
+                 from_joint: bool,
+                 overwrite: bool) -> Dict[str, MechanismFn]:
+    train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
+    parent_names = list(parent_dims.keys())
+    parent_name = 'all'
+    model, get_mechanism_fn = vae_gan(parent_dims=parent_dims,
+                                      latent_dim=16,
+                                      critic_layers=layers,
+                                      encoder_layers=mechanism_encoder_layers,
+                                      decoder_layers=mechanism_decoder_layers,
+                                      condition_divergence_on_parents=True,
+                                      from_joint=from_joint)
+    train_data, test_data = prep_mechanism_data(parent_name, parent_names, from_joint, train_datasets,
+                                                test_dataset, batch_size=512)
+    schedule = optimizers.piecewise_constant(boundaries=[5000, 8000], values=[1e-3, 1e-4, 1e-4 / 5])
+    optimizer = optimizers.adam(step_size=schedule)
+    params = train(model=model,
+                   job_dir=job_dir / f'do_{parent_name}',
+                   seed=seed,
+                   train_data=train_data,
+                   test_data=test_data,
+                   input_shape=input_shape,
+                   optimizer=optimizer,
+                   num_steps=10000,
+                   log_every=10,
+                   eval_every=250,
+                   save_every=250,
+                   overwrite=overwrite)
+    mechanisms = {parent_name: get_mechanism_fn(params) for parent_name in parent_names}
+    return mechanisms
 
 
 def get_mechanisms(job_dir: Path,
@@ -89,48 +120,34 @@ def get_mechanisms(job_dir: Path,
                    overwrite: bool) -> Dict[str, MechanismFn]:
     train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
     parent_names = list(parent_dims.keys())
-
+    classifiers = get_classifiers(job_dir / 'classifiers', seed, scenario, overwrite)
     mechanisms: Dict[str, MechanismFn] = {}
     for parent_name in (parent_names if partial_mechanisms and not baseline else ['all']):
-        if baseline:
-            model, get_mechanism_fn = vae_gan(parent_dims=parent_dims,
-                                              latent_dim=16,
-                                              critic_layers=layers,
-                                              encoder_layers=mechanism_encoder_layers,
-                                              decoder_layers=mechanism_decoder_layers,
-                                              condition_divergence_on_parents=True,
-                                              from_joint=from_joint)
-        else:
-            classifiers = get_classifiers(job_dir / 'classifiers', seed, scenario, overwrite)
-            model, get_mechanism_fn = functional_counterfactual(do_parent_name=parent_name,
-                                                                parent_dims=parent_dims,
-                                                                classifiers=classifiers,
-                                                                critic_layers=layers,
-                                                                marginal_dists=marginals,
-                                                                mechanism_encoder_layers=mechanism_encoder_layers,
-                                                                mechanism_decoder_layers=mechanism_decoder_layers,
-                                                                is_invertible=is_invertible,
-                                                                condition_divergence_on_parents=True,
-                                                                constraint_function_power=constraint_function_power,
-                                                                from_joint=from_joint)
-        job_subdir = job_dir / f'do_{parent_name}'
-        model_path = job_subdir / f'model.npy'
-        if model_path.exists() and not overwrite:
-            params = np.load(str(model_path), allow_pickle=True)
-        else:
-            train_data, test_data = prep_mechanism_data(parent_name, parent_names, from_joint, train_datasets,
-                                                        test_dataset, batch_size=512)
-            params = train(model=model,
-                           job_dir=job_subdir,
-                           seed=seed,
-                           train_data=train_data,
-                           test_data=test_data,
-                           input_shape=input_shape,
-                           optimizer=mechanism_optimizer,
-                           num_steps=5000,
-                           log_every=1,
-                           eval_every=250,
-                           save_every=250)
+        model, get_mechanism_fn = functional_counterfactual(do_parent_name=parent_name,
+                                                            parent_dims=parent_dims,
+                                                            classifiers=classifiers,
+                                                            critic_layers=layers,
+                                                            marginal_dists=marginals,
+                                                            mechanism_encoder_layers=mechanism_encoder_layers,
+                                                            mechanism_decoder_layers=mechanism_decoder_layers,
+                                                            is_invertible=is_invertible,
+                                                            condition_divergence_on_parents=True,
+                                                            constraint_function_power=constraint_function_power,
+                                                            from_joint=from_joint)
+        train_data, test_data = prep_mechanism_data(parent_name, parent_names, from_joint, train_datasets,
+                                                    test_dataset, batch_size=512)
+        params = train(model=model,
+                       job_dir=job_dir / f'do_{parent_name}',
+                       seed=seed,
+                       train_data=train_data,
+                       test_data=test_data,
+                       input_shape=input_shape,
+                       optimizer=mechanism_optimizer,
+                       num_steps=5000,
+                       log_every=1,
+                       eval_every=250,
+                       save_every=250,
+                       overwrite=overwrite)
         mechanisms[parent_name] = get_mechanism_fn(params)
     mechanisms = {parent_name: mechanisms['all'] for parent_name in parent_names} if 'all' in mechanisms else mechanisms
     return mechanisms
@@ -162,14 +179,21 @@ def run_experiment(job_dir: Path,
     results = []
     for seed in seeds:
         seed_dir = experiment_dir / f'seed_{seed:d}'
-        mechanisms = get_mechanisms(job_dir=seed_dir,
-                                    seed=seed,
-                                    scenario=scenario,
-                                    baseline=baseline,
-                                    partial_mechanisms=partial_mechanisms,
-                                    constraint_function_power=constraint_function_power,
-                                    from_joint=from_joint,
-                                    overwrite=overwrite)
+        if baseline:
+            mechanisms = get_baseline(job_dir=seed_dir,
+                                      seed=seed,
+                                      scenario=scenario,
+                                      from_joint=from_joint,
+                                      overwrite=overwrite)
+        else:
+            mechanisms = get_mechanisms(job_dir=seed_dir,
+                                        seed=seed,
+                                        scenario=scenario,
+                                        baseline=baseline,
+                                        partial_mechanisms=partial_mechanisms,
+                                        constraint_function_power=constraint_function_power,
+                                        from_joint=from_joint,
+                                        overwrite=overwrite)
 
         results.append(evaluate(seed_dir, mechanisms, is_invertible, marginals, pseudo_oracles, test_dataset,
                                 overwrite=overwrite))
