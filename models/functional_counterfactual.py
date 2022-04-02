@@ -49,7 +49,7 @@ def mechanism(do_parent_names: Sequence[str],
         enc_params, dec_params = params
         _parents = concat_parents(parents)
         _do_parents = concat_parents(do_parents)
-        latent_code = jnp.concatenate([enc_apply_fn(enc_params, image), *_parents, *_do_parents], axis=-1)
+        latent_code = jnp.concatenate([enc_apply_fn(enc_params, image), _parents, _do_parents], axis=-1)
         return dec_apply_fn(dec_params, latent_code)
 
     return init_fn, apply_fn
@@ -73,19 +73,20 @@ def functional_counterfactual(do_parent_name: str,
     do_parent_names = tuple(parent_dims.keys()) if do_parent_name == 'all' else (do_parent_name,)
     source_dist = frozenset() if from_joint else frozenset(parent_dims.keys())
     target_dist = frozenset(do_parent_names) if from_joint else frozenset(parent_dims.keys())
-    divergence_init_fn, divergence_apply_fn = f_gan(critic=serial(critic_layers), mode='gan', trick_g=True)
+    divergence_init_fn, divergence_apply_fn = f_gan(critic=serial(*critic_layers), mode='gan', trick_g=True)
     mechanism_init_fn, mechanism_apply_fn = mechanism(do_parent_names, parent_dims, mechanism_encoder_layers,
                                                       mechanism_decoder_layers)
     _is_invertible = all([is_invertible[parent_name] for parent_name in do_parent_names])
 
-    def sampling_fn(rng: KeyArray, sample_shape: Shape, parents: Dict[str, Array]) -> Tuple[Array, Optional[Array]]:
+    def sampling_fn(rng: KeyArray, sample_shape: Shape, parents: Dict[str, Array]) -> Tuple[Dict[str, Array], Optional[Array]]:
         new_parents = {p_name: marginal_dists[p_name].sample(rng, sample_shape) for p_name in do_parent_names}
         do_parents = {**parents, **new_parents}
         order = ... if do_parent_name == 'all' else jnp.argsort(jnp.argmax(do_parents[do_parent_name], axis=-1))
         return do_parents, order
 
     def init_fn(rng: KeyArray, input_shape: Shape) -> Params:
-        f_div_output_shape, f_div_params = divergence_init_fn(rng, input_shape)
+        c_shape = (-1, sum(parent_dims.values()))
+        f_div_output_shape, f_div_params = divergence_init_fn(rng, (input_shape, c_shape))
         mechanism_output_shape, mechanism_params = mechanism_init_fn(rng, input_shape)
         return mechanism_output_shape, (f_div_params, mechanism_params)
 
@@ -98,7 +99,9 @@ def functional_counterfactual(do_parent_name: str,
         do_image = mechanism_apply_fn(mechanism_params, image, parents, do_parents)
 
         # effectiveness constraint
-        loss, output = divergence_apply_fn(divergence_params, inputs[target_dist], (do_image, do_parents))
+        p_sample = (inputs[target_dist][0], concat_parents(inputs[target_dist][1]))
+        q_sample = (do_image, concat_parents(do_parents))
+        loss, output = divergence_apply_fn(divergence_params, p_sample, q_sample)
         for parent_name, classifier in classifiers.items():
             cross_entropy, output[parent_name] = classifier((do_image, do_parents[parent_name]))
             loss = loss + cross_entropy

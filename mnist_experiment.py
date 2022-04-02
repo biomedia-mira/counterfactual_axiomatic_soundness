@@ -6,7 +6,7 @@ from typing import cast, Dict, List
 
 import tensorflow as tf
 from jax.example_libraries import optimizers
-from jax.example_libraries.stax import Conv, Dense, FanInConcat, Flatten, LeakyRelu
+from jax.example_libraries.stax import Conv, Dense, FanInConcat, Flatten, LeakyRelu, ConvTranspose
 
 from components.stax_extension import BroadcastTogether, ResBlock, Reshape, Resize, StaxLayer, PixelNorm2D
 from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario, Scenario
@@ -29,42 +29,35 @@ layers = \
 
 critic_layers = (BroadcastTogether(-1), FanInConcat(-1), *layers)
 
-# mechanism_encoder_layers = \
-#     (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      Reshape((-1, 7 * 7 * 128)), Dense(1024), LeakyRelu)
+mechanism_encoder_layers = \
+    (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+     Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+     Reshape((-1, 7 * 7 * 128)), Dense(1024), LeakyRelu)
+
+mechanism_decoder_layers = \
+    (Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
+     ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+     ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+     Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'))
+
+
+
+### VAE
+# hidden_dim = 256
+# n_channels = 64
 #
-# mechanism_decoder_layers = \
-#     (Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
-#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Tanh)
-
-# mechanism_decoder_layers = \
-#     (Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
-#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'))
-
-
-###
-hidden_dim = 256
-n_channels = 64
-
-mechanism_encoder_layers \
-    = (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-       Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-       cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
-
-mechanism_decoder_layers \
-    = (Dense(hidden_dim), LeakyRelu, Dense(n_channels * 7 * 7), LeakyRelu,
-       Reshape((-1, 7, 7, n_channels)), Resize((-1, 14, 14, n_channels)),
-       Conv(n_channels, filter_shape=(5, 5), strides=(1, 1), padding='SAME'), LeakyRelu,
-       Resize((-1, 28, 28, n_channels)),
-       Conv(3, filter_shape=(5, 5), strides=(1, 1), padding='SAME'), LeakyRelu,
-       Conv(3, filter_shape=(1, 1), strides=(1, 1), padding='SAME'))
-
-
+# mechanism_encoder_layers \
+#     = (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+#        Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+#        cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
+#
+# mechanism_decoder_layers \
+#     = (Dense(hidden_dim), LeakyRelu, Dense(n_channels * 7 * 7), LeakyRelu,
+#        Reshape((-1, 7, 7, n_channels)), Resize((-1, 14, 14, n_channels)),
+#        Conv(n_channels, filter_shape=(5, 5), strides=(1, 1), padding='SAME'), LeakyRelu,
+#        Resize((-1, 28, 28, n_channels)),
+#        Conv(3, filter_shape=(5, 5), strides=(1, 1), padding='SAME'), LeakyRelu,
+#        Conv(3, filter_shape=(1, 1), strides=(1, 1), padding='SAME'))
 ###
 
 def get_classifiers(job_dir: Path,
@@ -84,7 +77,7 @@ def get_classifiers(job_dir: Path,
                        input_shape=input_shape,
                        optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
                        num_steps=2000,
-                       log_every=1,
+                       log_every=100,
                        eval_every=50,
                        save_every=50,
                        overwrite=overwrite)
@@ -142,7 +135,7 @@ def get_mechanisms(job_dir: Path,
         model, get_mechanism_fn = functional_counterfactual(do_parent_name=parent_name,
                                                             parent_dims=parent_dims,
                                                             classifiers=classifiers,
-                                                            critic_layers=layers,
+                                                            critic_layers=critic_layers,
                                                             marginal_dists=marginals,
                                                             mechanism_encoder_layers=mechanism_encoder_layers,
                                                             mechanism_decoder_layers=mechanism_decoder_layers,
@@ -162,7 +155,7 @@ def get_mechanisms(job_dir: Path,
                        input_shape=input_shape,
                        optimizer=mechanism_optimizer,
                        num_steps=5000,
-                       log_every=1,
+                       log_every=10,
                        eval_every=250,
                        save_every=250,
                        overwrite=overwrite)
