@@ -1,33 +1,29 @@
-from typing import Any, Callable, Dict, Sequence, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 import jax.numpy as jnp
 from jax import jit, random, tree_map, value_and_grad
 from jax.example_libraries.optimizers import Optimizer, OptimizerState, ParamsFn
-from jax.example_libraries.stax import Dense, FanInConcat, LeakyRelu, parallel, serial
 
 from components import Array, KeyArray, Model, Params, Shape, StaxLayer, UpdateFn
 from components.f_gan import f_gan
 from components.standard_vae import vae
-from components.stax_extension import Pass
+from datasets.utils import MarginalDistribution
 from models.functional_counterfactual import MechanismFn
 from models.utils import concat_parents
 
 
 def vae_gan(parent_dims: Dict[str, int],
-            latent_dim: int,
-            critic_layers: Sequence[StaxLayer],
-            encoder_layers: Sequence[StaxLayer],
-            decoder_layers: Sequence[StaxLayer],
+            marginal_dists: Dict[str, MarginalDistribution],
+            critic: StaxLayer,
+            vae_encoder: StaxLayer,
+            vae_decoder: StaxLayer,
             from_joint: bool = True) -> Tuple[Model, Callable[[Params], MechanismFn]]:
     assert len(parent_dims) > 0
     source_dist = frozenset() if from_joint else frozenset(parent_dims.keys())
     target_dist = source_dist
-    hidden_dim = 256
-    encoder = serial(parallel(serial(*encoder_layers), Pass), FanInConcat(axis=-1),
-                     Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu)
-    decoder = serial(FanInConcat(axis=-1), *decoder_layers)
-    vae_init_fn, vae_apply_fn = vae(latent_dim, encoder, decoder, conditional=True, bernoulli_ll=True)
-    gan_init_fn, gan_apply_fn = f_gan(critic=serial(*critic_layers), mode='gan', trick_g=True)
+    parent_names = parent_dims.keys()
+    vae_init_fn, vae_apply_fn = vae(encoder=vae_encoder, decoder=vae_decoder, conditional=True, bernoulli_ll=True)
+    gan_init_fn, gan_apply_fn = f_gan(critic=critic, mode='gan', trick_g=True)
 
     def init_fn(rng: KeyArray, input_shape: Shape) -> Params:
         c_shape = (-1, sum(parent_dims.values()))
@@ -36,18 +32,19 @@ def vae_gan(parent_dims: Dict[str, int],
         return output_shape, (gan_params, vae_params)
 
     def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Tuple[Array, Any]:
+        k1, k2 = random.split(rng, 2)
         gan_params, vae_params = params
         (image, parents) = inputs[source_dist]
-        vae_loss, recon, vae_output = vae_apply_fn(vae_params, rng, (image, concat_parents(parents)))
+        vae_loss, recon, vae_output = vae_apply_fn(vae_params, k1, (image, concat_parents(parents)))
         p_sample = (inputs[target_dist][0], concat_parents(inputs[target_dist][1]))
         q_sample = (recon, concat_parents(parents))
         gan_loss, gan_output = gan_apply_fn(gan_params, p_sample, q_sample)
-        loss = vae_loss  # + gan_loss
+        loss = vae_loss + gan_loss
 
         # conditional samples just for visualisation
-        sample_parents = {name: jnp.eye(dim)[random.randint(rng, (image.shape[0],), 0, dim)]
-                          for name, dim in parent_dims.items()}
-        _, samples, _ = vae_apply_fn(vae_params, rng, (image, concat_parents(sample_parents)))
+        sample_parents = {p_name: marginal_dists[p_name].sample(_rng, (image.shape[0],))
+                          for _rng, p_name in zip(random.split(k2, len(parent_names)), parent_names)}
+        _, samples, _ = vae_apply_fn(vae_params, k1, (image, concat_parents(sample_parents)))
         output = {'image': image, 'samples': samples, 'loss': loss[jnp.newaxis], **vae_output, **gan_output}
         return loss, output
 

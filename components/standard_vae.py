@@ -3,10 +3,10 @@ from typing import Any, Dict, Tuple
 import jax.nn as nn
 import jax.numpy as jnp
 from jax import random, vmap
-from jax.example_libraries.stax import Dense, elementwise, FanOut, parallel, serial, Sigmoid, \
-    Tanh
+from jax.example_libraries.stax import elementwise, parallel, serial, Sigmoid, Tanh
 
 from components import Array, KeyArray, Params, Shape, StaxLayer
+from components.stax_extension import Pass
 from models.utils import rescale
 
 
@@ -35,15 +35,14 @@ def __softplus(x: Array, threshold: float = 20.) -> Array:
     return (nn.softplus(x) * (x < threshold)) + (x * (x >= threshold))
 
 
-def vae(latent_dim: int, encoder: StaxLayer, decoder: StaxLayer, conditional: bool = False,
+def vae(encoder: StaxLayer, decoder: StaxLayer, conditional: bool = False, beta: float = 1.,
         bernoulli_ll: bool = True) -> StaxLayer:
     """
     Standard VAE with standard normal latent prior/posterior and Bernoulli or normal likelihood.
     Expects input to be in the range of -1 to 1
     """
     calc_ll = calc_bernoulli_log_pdf if bernoulli_ll else calc_normal_log_pdf
-    enc_init_fn, enc_apply_fn \
-        = serial(encoder, FanOut(2), parallel(Dense(latent_dim), serial(Dense(latent_dim)), elementwise(__softplus)))
+    enc_init_fn, enc_apply_fn = serial(encoder, parallel(Pass, elementwise(__softplus)))
 
     dec_init_fn, dec_apply_fn = serial(decoder, Sigmoid if bernoulli_ll else Tanh)
 
@@ -63,7 +62,7 @@ def vae(latent_dim: int, encoder: StaxLayer, decoder: StaxLayer, conditional: bo
         recon = dec_apply_fn(dec_params, (z, *c) if conditional else z)
         log_px = calc_ll(x, recon)
         kl = calc_kl(mean_z, scale_z)
-        elbo = log_px - kl
+        elbo = log_px - beta * kl
         loss = jnp.mean(-elbo)
         recon = rescale(recon, (0., 1.), (-1., 1.)) if bernoulli_ll else recon
         avg_mean_z = jnp.mean(mean_z, axis=-1)
