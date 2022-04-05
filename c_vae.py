@@ -3,11 +3,12 @@ import itertools
 import os
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Container
-from typing import Iterable, Sequence
+from typing import Any, Callable, Dict, Optional
+from typing import Iterable
 from typing import Tuple, Union
 
 import jax
+import jax.nn as nn
 import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
@@ -15,20 +16,18 @@ import tensorflow_datasets as tfds
 import torch
 from jax import jit, random, value_and_grad, vmap
 from jax.example_libraries import optimizers
-from jax.example_libraries.optimizers import make_schedule, Optimizer, optimizer, OptimizerState, Params, ParamsFn
-from jax.example_libraries.stax import Conv, Dense, Exp, FanInConcat, FanOut, Flatten, LeakyRelu, parallel, Relu, \
-    serial, Sigmoid, elementwise, ConvTranspose
+from jax.example_libraries.optimizers import Optimizer, OptimizerState, Params, ParamsFn
+from jax.example_libraries.stax import Conv, Dense, elementwise, FanInConcat, FanOut, Flatten, LeakyRelu, parallel, \
+    serial, Sigmoid, Relu
 from jax.image import resize
-from jax.lax import stop_gradient
 from jax.random import KeyArray
 from jax.tree_util import tree_map, tree_reduce
 from numpy.typing import NDArray
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from jax.nn.initializers import kaiming_uniform
+
 from datasets.confounded_mnist import digit_colour_scenario
 from datasets.utils import image_gallery
-import jax.nn as nn
 
 tf.config.experimental.set_visible_devices([], 'GPU')
 Array = Union[jnp.ndarray, NDArray, Any]
@@ -44,41 +43,6 @@ Model = Tuple[InitFn, ApplyFn, InitOptimizerFn]
 
 def softplus(x, threshold: float = 20.):
     return (nn.softplus(x) * (x < threshold)) + (x * (x >= threshold)) + 1e-5
-
-
-@optimizer
-def mlm(step_size):
-    """
-    Implements optimizer for modified Lagrangian multiplier method
-    """
-    step_size = make_schedule(step_size)
-
-    def init(x0):
-        return x0
-
-    def update(i, g, _lambda):
-        _lambda = _lambda + step_size(i) * g
-        return _lambda * (jnp.sign(_lambda) > 0)
-
-    def get_params(_lambda):
-        return _lambda
-
-    return Optimizer(init, update, get_params)
-
-
-def zip_optimizers(optimizers: Container[Optimizer]):
-    is_leaf = lambda l: isinstance(l, Optimizer)
-
-    def init(x0):
-        return tree_map(lambda opt, _x0: opt.init_fn(_x0), optimizers, x0, is_leaf=is_leaf)
-
-    def update(i, g, x):
-        return tree_map(lambda opt, _x, _g: opt.update_fn(i, _g, _x), optimizers, x, g, is_leaf=is_leaf)
-
-    def get_params(x):
-        return tree_map(lambda opt, _x: opt.params_fn(_x), optimizers, x, is_leaf=is_leaf)
-
-    return Optimizer(init, update, get_params)
 
 
 class ColourMNIST(Dataset):
@@ -98,10 +62,6 @@ class ColourMNIST(Dataset):
         sample['digit'] = self.parents['digit'][idx]
         sample['colour'] = self.parents['colour'][idx]
         return sample
-
-
-if __name__ == '__main__':
-    import torchvision.transforms as transforms
 
 
 def to_numpy_iterator(data: tf.data.Dataset, batch_size: int, drop_remainder: bool = True) -> Any:
@@ -142,9 +102,6 @@ Reshape = reshape
 UpSample = up_sample
 
 
-# UpSample = lambda x: serial(ConvTranspose(32, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu)
-
-
 def standard_vae(parent_dims: Dict[str, int],
                  latent_dim: int = 16,
                  hidden_dim: int = 128) -> Model:
@@ -183,8 +140,7 @@ def standard_vae(parent_dims: Dict[str, int],
         c_dim = sum(parent_dims.values())
         (enc_output_shape, _), enc_params = enc_init_fn(k1, (input_shape, (-1, c_dim)))
         output_shape, dec_params = dec_init_fn(k2, (enc_output_shape, (-1, c_dim)))
-        _lambda = jnp.zeros(())
-        return output_shape, {'vae': (enc_params, dec_params), 'lagrangian': _lambda}
+        return output_shape, (enc_params, dec_params)
 
     # @vmap
     # def _kl(mu: Array, variance: Array) -> Array:
@@ -205,27 +161,22 @@ def standard_vae(parent_dims: Dict[str, int],
 
     def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Tuple[Array, Dict[str, Array]]:
         k1, k2 = random.split(rng, 2)
-        (enc_params, dec_params), _lambda = params['vae'], params['lagrangian']
+        enc_params, dec_params = params
         image, parents = inputs
         _parents = jnp.concatenate([parents[parent_name] for parent_name in sorted(parent_dims.keys())], axis=-1)
         mean_z, scale_z = enc_apply_fn(enc_params, (image, _parents))
         z = mean_z + scale_z * random.normal(k1, mean_z.shape)
         recon = dec_apply_fn(dec_params, (z, _parents))
-        log_pdf = jnp.sum(image * jnp.log(recon + 1e-12) + (1. - image) * jnp.log(1. - recon + 1e-12), axis=(1, 2, 3))  # _log_pdf(image, recon)
+        log_pdf = jnp.sum(image * jnp.log(recon + 1e-12) + (1. - image) * jnp.log(1. - recon + 1e-12),
+                          axis=(1, 2, 3))  # _log_pdf(image, recon)
 
         # var_scale = .1
         # log_pdf = -.5 * jnp.sum((image - recon) ** 2. / var_scale + jnp.log(2 * jnp.pi * var_scale), axis=(1, 2, 3))
         var_z = scale_z ** 2.
         kl = 0.5 * jnp.sum(var_z + (mean_z ** 2.) - 1. - jnp.log(var_z + 1e-12), axis=-1)  # _kl(mean_z, variance_z)
 
-        #
         elbo = log_pdf - kl
-        damping = 50
-        eps = 20
-        damp = damping * stop_gradient(eps - jnp.mean(kl))
-        # loss = jnp.mean(-log_pdf) - (_lambda - damp) * (eps - jnp.mean(kl))
         loss = jnp.mean(-elbo)
-
         # conditional samples
         keys = random.split(k2, len(parent_dims))
         random_parents = {'colour': parents['colour'], 'digit': parents['colour']}
@@ -244,14 +195,10 @@ def standard_vae(parent_dims: Dict[str, int],
                       'variance': jnp.mean(var_z, axis=-1),
                       'mean': jnp.mean(mean_z, axis=-1),
                       'snr': jnp.abs(jnp.mean(mean_z / var_z, axis=-1)),
-                      '_lambda': _lambda[jnp.newaxis],
-                      'damp': damp[jnp.newaxis],
                       'loss': loss}
 
     def init_optimizer_fn(params: Params, optimizer: Optimizer) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
-        # model_opt_init, model_opt_update, model_get_params = optimizer
-        # mlm_opt_init, mlm_opt_update, get_params = mlm(1.)
-        opt_init, opt_update, get_params = zip_optimizers({'vae': optimizer, 'lagrangian': mlm(1.)})
+        opt_init, opt_update, get_params = optimizer
 
         @jit
         def update(i: int, opt_state: OptimizerState, inputs: Any, rng: KeyArray) -> Tuple[OptimizerState, Array, Any]:
@@ -264,11 +211,9 @@ def standard_vae(parent_dims: Dict[str, int],
 
         return opt_init(params), update, get_params
 
-
     return init_fn, apply_fn, init_optimizer_fn
 
 
-###
 def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str], None]] = None) \
         -> Callable[[Dict, int, Optional[str]], None]:
     logdir = (job_dir / 'logs' / name)
@@ -324,7 +269,8 @@ def train(model: Model,
     opt_state, update, get_params = init_optimizer_fn(params, optimizer)
     eye = np.eye(10)
     for step, d in tqdm(enumerate(itertools.cycle(train_data)), total=num_steps):
-        inputs = (d['x'].numpy() / 255., {'digit': eye[d['digit'].numpy()], 'colour': eye[d['colour'].numpy()]})
+        # inputs = (d['x'].numpy() / 255., {'digit': eye[d['digit'].numpy()], 'colour': eye[d['colour'].numpy()]})
+        inputs = d
         if step >= num_steps:
             break
         rng, _ = jax.random.split(rng)
@@ -337,9 +283,10 @@ def train(model: Model,
         if step % eval_every == 0 and test_data is not None:
             cum_output = None
             for d in test_data:
-                test_inputs = (
-                    d['x'].numpy() / 255., {'digit': eye[d['digit'].numpy()], 'colour': eye[d['colour'].numpy()]})
+                # test_inputs = (
+                #     d['x'].numpy() / 255., {'digit': eye[d['digit'].numpy()], 'colour': eye[d['colour'].numpy()]})
                 rng, _ = jax.random.split(rng)
+                test_inputs = d
                 _, output = apply_fn(get_params(opt_state), test_inputs, rng=rng)
                 cum_output = accumulate_output(output, cum_output)
             test_writer(cum_output, step, None)
@@ -356,35 +303,48 @@ if __name__ == '__main__':
     parent_names = parent_dims.keys()
 
     batch_size = 512
-    # train_data = to_numpy_iterator(train_datasets[frozenset()], batch_size, drop_remainder=True)
-    # test_data = to_numpy_iterator(test_dataset, batch_size, drop_remainder=False)
+    train_data = to_numpy_iterator(train_datasets[frozenset()], batch_size, drop_remainder=True)
+    test_data = to_numpy_iterator(test_dataset, batch_size, drop_remainder=False)
+    # ##
+    # data_dir = '/vol/biomedic/users/mm6818/projects/grand_canyon/data/mnist_digit_colour'
+    # trans = transforms.Compose([
+    #     transforms.ToPILImage(),
+    #     transforms.RandomCrop((28, 28), padding=2),
+    #     transforms.ToTensor()
+    # ])
+    #
+    # trans_test = transforms.Compose([
+    #     transforms.ToPILImage(),
+    #     transforms.ToTensor()
+    # ])
+    #
+    # train_set = ColourMNIST(data_dir, train=True, transform=trans)
+    # test_set = ColourMNIST(data_dir, train=False, transform=trans_test)
+
+    # kwargs = {'batch_size': batch_size, 'num_workers': 0, 'pin_memory': False}
+    #
+    # train_data = torch.utils.data.DataLoader(
+    #     train_set, shuffle=True, drop_last=True, **kwargs)
+    # test_data = torch.utils.data.DataLoader(
+    #     test_set, shuffle=False, **kwargs)
     ##
-    data_dir = '/vol/biomedic/users/mm6818/projects/grand_canyon/data/mnist_digit_colour'
-    trans = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.RandomCrop((28, 28), padding=2),
-        transforms.ToTensor()
-    ])
 
-    trans_test = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.ToTensor()
-    ])
+    # schedule = optimizers.piecewise_constant(boundaries=[5000, 8000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
+    # optimizer = optimizers.adam(step_size=schedule, b1=0.9, b2=.999)
 
-    train_set = ColourMNIST(data_dir, train=True, transform=trans)
-    test_set = ColourMNIST(data_dir, train=False, transform=trans_test)
+    ###
 
-    kwargs = {'batch_size': batch_size, 'num_workers': 0, 'pin_memory': False}
-
-    train_data = torch.utils.data.DataLoader(
-        train_set, shuffle=True, drop_last=True, **kwargs)
-    test_data = torch.utils.data.DataLoader(
-        test_set, shuffle=False, **kwargs)
-    ##
-
-    schedule = optimizers.piecewise_constant(boundaries=[5000, 8000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
-
-    optimizer = optimizers.adam(step_size=schedule, b1=0.9, b2=.999)
+    ###
+    # def classifier(n_classes: int):
+    # width = 128
+    # conv = (Conv(width // 4, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Relu,
+    #         Conv(width // 4, filter_shape=(3, 3), strides=(2, 2), padding='SAME'), Relu,
+    #         Conv(width // 4, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Relu,
+    #         Conv(width // 4, filter_shape=(3, 3), strides=(2, 2), padding='SAME'), Relu,
+    #         Conv(width // 4, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Relu,
+    #         Conv(width // 4, filter_shape=(3, 3), strides=(2, 2), padding='SAME'), Relu,
+    #         Flatten, Dense(width*2), Relu, Dense(10))
+    # classifiers {key: serial()}
 
     model = standard_vae(parent_dims, latent_dim=16, hidden_dim=256)
     params = train(model=model,

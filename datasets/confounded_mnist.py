@@ -15,6 +15,8 @@ from datasets.utils import get_diagonal_confusion_matrix, get_uniform_confusion_
 from datasets.utils import MarginalDistribution
 from datasets.utils import Scenario
 from typing import Any
+import jax
+from tensorflow.keras import layers
 
 def function_dict_to_confounding_fn(function_dict: Dict[int, Callable[[IMAGE], IMAGE]],
                                     cm: NDArray[np.float_]) -> ConfoundingFn:
@@ -158,10 +160,8 @@ def create_confounded_mnist_dataset(data_dir: Path,
     encode_fn = get_encode_fn(parent_dims)
     dataset_dir = Path(f'{str(data_dir)}/{dataset_name}')
     train_data, train_parents = load_cached_dataset(dataset_dir / 'train', ds_train, train_confounding_fns, parent_dims)
-    train_data = train_data.map(encode_fn)
 
     test_data, _ = load_cached_dataset(dataset_dir / 'test', ds_test, test_confounding_fns, parent_dims)
-    test_data = test_data.map(encode_fn)
     # Get unconfounded datasets by looking at the parents
     train_data_dict, marginals = get_marginal_datasets(train_data, train_parents, parent_dims)
     train_data_dict = train_data_dict if de_confound else dict.fromkeys(train_data_dict.keys(), train_data)
@@ -170,9 +170,16 @@ def create_confounded_mnist_dataset(data_dir: Path,
     #     show_images(dataset, f'train set {str(key)}')
     # show_images(test_data, f'test set')
 
-    train_data_dict = {
-        key: dataset.map(lambda image, parents: (random_crop_and_rescale(image, fractions=(.3, .3)), parents))
-        for key, dataset in train_data_dict.items()}
+    # train_data_dict = {
+    #     key: dataset.map(lambda image, parents: (random_crop_and_rescale(image, fractions=(.3, .3)), parents))
+    #     for key, dataset in train_data_dict.items()}
+
+    def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
+        return layers.RandomCrop(28, 28)(tf.pad(image, ((2, 2), (2, 2), (0, 0)))), parents
+
+    train_data_dict = jax.tree_map(lambda ds: ds.map(augment), train_data_dict)
+    train_data_dict = jax.tree_map(lambda ds: ds.map(encode_fn), train_data_dict)
+    test_data = test_data.map(encode_fn)
 
     return train_data_dict, test_data, marginals, input_shape
 
