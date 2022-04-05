@@ -10,7 +10,7 @@ from components.standard_vae import vae
 from datasets.utils import MarginalDistribution
 from models.functional_counterfactual import MechanismFn
 from models.utils import concat_parents
-
+from jax.lax import stop_gradient
 
 def vae_gan(parent_dims: Dict[str, int],
             marginal_dists: Dict[str, MarginalDistribution],
@@ -39,12 +39,12 @@ def vae_gan(parent_dims: Dict[str, int],
         p_sample = (inputs[target_dist][0], concat_parents(inputs[target_dist][1]))
         q_sample = (recon, concat_parents(parents))
         gan_loss, gan_output = gan_apply_fn(gan_params, p_sample, q_sample)
-        loss = vae_loss + gan_loss
+        loss = vae_loss# + gan_loss
 
         # conditional samples just for visualisation
         sample_parents = {p_name: marginal_dists[p_name].sample(_rng, (image.shape[0],))
                           for _rng, p_name in zip(random.split(k2, len(parent_names)), parent_names)}
-        _, samples, _ = vae_apply_fn(vae_params, k1, (image, concat_parents(sample_parents)))
+        _, samples, _ = vae_apply_fn(stop_gradient(vae_params), k1, (image, concat_parents(sample_parents)))
         output = {'image': image, 'samples': samples, 'loss': loss[jnp.newaxis], **vae_output, **gan_output}
         return loss, output
 

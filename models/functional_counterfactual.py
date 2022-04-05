@@ -47,14 +47,14 @@ def functional_counterfactual(do_parent_name: str,
     def init_fn(rng: KeyArray, input_shape: Shape) -> Params:
         c_shape = (-1, sum(parent_dims.values()))
         f_div_output_shape, f_div_params = divergence_init_fn(rng, (input_shape, c_shape))
-        c_shape = (-1, sum([dim for p_name, dim in parent_dims if p_name in do_parent_names]))
+        c_shape = (-1, sum([dim for p_name, dim in parent_dims.items() if p_name in do_parent_names]))
         mechanism_output_shape, mechanism_params = mechanism_init_fn(rng, (input_shape, c_shape, c_shape))
         return mechanism_output_shape, (f_div_params, mechanism_params)
 
-    def parents_to_array(parents: Dict[str, Array]):
+    def parents_to_array(parents: Dict[str, Array]) -> Array:
         return concat_parents({p_name: array for p_name, array in parents.items() if p_name in do_parent_names})
 
-    def apply_mechanism(params: Params, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]):
+    def apply_mechanism(params: Params, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
         return mechanism_apply_fn(params, image, parents_to_array(parents), parents_to_array(do_parents))
 
     def sampling_fn(rng: KeyArray, sample_shape: Shape, parents: Dict[str, Array]) -> Tuple[
@@ -83,7 +83,6 @@ def functional_counterfactual(do_parent_name: str,
         output.update({'image': image[order], 'do_image': do_image[order]})
 
         # composition constraint
-        # TODO: major issue the way sum is done and invertibility too
         image_null_intervention = image
         for i in range(1, constraint_function_power + 1):
             image_null_intervention = apply_mechanism(mechanism_params, image_null_intervention, parents, parents)

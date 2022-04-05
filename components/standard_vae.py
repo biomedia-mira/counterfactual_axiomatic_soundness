@@ -42,8 +42,7 @@ def vae(encoder: StaxLayer, decoder: StaxLayer, conditional: bool = False, beta:
     Expects input to be in the range of -1 to 1
     """
     calc_ll = calc_bernoulli_log_pdf if bernoulli_ll else calc_normal_log_pdf
-    enc_init_fn, enc_apply_fn = serial(encoder, parallel(Pass, elementwise(__softplus)))
-
+    enc_init_fn, enc_apply_fn = serial(encoder, parallel(Pass, elementwise(lambda x: __softplus(x) + 1e-5)))
     dec_init_fn, dec_apply_fn = serial(decoder, Sigmoid if bernoulli_ll else Tanh)
 
     def init_fn(rng: KeyArray, input_shape: Shape) -> Tuple[Shape, Params]:

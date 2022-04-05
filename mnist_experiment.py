@@ -47,31 +47,32 @@ mechanism = serial(parallel(encoder_layers,
                    FanInConcat(-1), decoder_layers, Tanh)
 
 # For the baseline C-VAE
-latent_dim = 16
-vae_encoder = serial(parallel(serial(*encoder_layers), Pass), FanInConcat(axis=-1),
-                     Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu,
-                     FanOut(2), parallel(Dense(latent_dim), serial(Dense(latent_dim))))
-
-vae_decoder = serial(FanInConcat(axis=-1), *decoder_layers)
+# latent_dim = 16
+# vae_encoder = serial(parallel(serial(*encoder_layers), Pass), FanInConcat(axis=-1),
+#                      Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu,
+#                      FanOut(2), parallel(Dense(latent_dim), serial(Dense(latent_dim))))
+#
+# vae_decoder = serial(FanInConcat(axis=-1), *decoder_layers)
 
 
 ### VAE
-# hidden_dim = 256
-# n_channels = 64
-#
-# _enc = (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-#         Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-#         cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
-# _dec = (Dense(hidden_dim), LeakyRelu, Dense(n_channels * 7 * 7), LeakyRelu,
-#         Reshape((-1, 7, 7, n_channels)), Resize((-1, 14, 14, n_channels)),
-#         Conv(n_channels, filter_shape=(5, 5), strides=(1, 1), padding='SAME'), LeakyRelu,
-#         Resize((-1, 28, 28, n_channels)),
-#         Conv(3, filter_shape=(5, 5), strides=(1, 1), padding='SAME'), LeakyRelu,
-#         Conv(3, filter_shape=(1, 1), strides=(1, 1), padding='SAME'))
-# vae_encoder = serial(parallel(serial(*_enc), Pass), FanInConcat(axis=-1),
-#                      Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu,
-#                      FanOut(2), parallel(Dense(latent_dim), serial(Dense(latent_dim))))
-# vae_decoder = serial(FanInConcat(axis=-1), *_dec)
+latent_dim = 16
+hidden_dim = 256
+n_channels = 64
+
+_enc = (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+        Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+        cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
+_dec = (Dense(hidden_dim), LeakyRelu, Dense(n_channels * 7 * 7), LeakyRelu,
+        Reshape((-1, 7, 7, n_channels)), Resize((-1, 14, 14, n_channels)),
+        Conv(n_channels, filter_shape=(5, 5), strides=(1, 1), padding='SAME'), LeakyRelu,
+        Resize((-1, 28, 28, n_channels)),
+        Conv(3, filter_shape=(5, 5), strides=(1, 1), padding='SAME'),
+        Conv(3, filter_shape=(1, 1), strides=(1, 1), padding='SAME'))
+vae_encoder = serial(parallel(serial(*_enc), Pass), FanInConcat(axis=-1),
+                     Dense(hidden_dim), LeakyRelu,
+                     FanOut(2), parallel(Dense(latent_dim), serial(Dense(latent_dim))))
+vae_decoder = serial(FanInConcat(axis=-1), *_dec)
 
 
 ##
@@ -229,7 +230,7 @@ def run_experiment(job_dir: Path,
     pseudo_oracle_dir = job_dir / scenario_name / 'pseudo_oracles'
     experiment_dir = job_dir / scenario_name / job_name
 
-    pseudo_oracles = get_classifiers(pseudo_oracle_dir, 100, scenario_fn(data_dir, False, False), overwrite=False)
+    pseudo_oracles = get_classifiers(pseudo_oracle_dir, 368392, scenario_fn(data_dir, False, False), overwrite=False)
 
     scenario = scenario_fn(data_dir, confound, de_confound)
     train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
