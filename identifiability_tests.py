@@ -140,9 +140,9 @@ def commutativity_test(mechanism_fns: Dict[str, MechanismFn],
                 marginal = marginals[parent_name]
                 _do_parents = {**_parents, parent_name: marginal.sample(rng, (image.shape[0],))}
                 _image = mechanism_fn(rng, _image, _parents, _do_parents)
-                _do_parents = _parents
+                _parents = _do_parents
                 image_sequence.append(_image)
-        im1, im2 = image_sequence[2], image_sequence[-2]
+        im1, im2 = image_sequence[2], image_sequence[-1]
         image_sequence.append(im1 - im2 - 1.)
         output = {'distance': l1(im1, im2)}
         # plot
