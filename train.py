@@ -14,7 +14,6 @@ from components import Model, Shape
 from components.stax_extension import Array
 from datasets.utils import image_gallery
 from utils import flatten_nested_dict
-from queue import Queue
 
 
 def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str], None]] = None) \
@@ -36,11 +35,12 @@ def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str],
     return writer_fn
 
 
-def accumulate_output(new_output: Any, cum_output: Optional[Any]) -> Any:
-    def update_value(value: Array, new_value: Array) -> Array:
-        return value + new_value if value.ndim == 0 \
-            else (jnp.concatenate((value, new_value)) if value.ndim == 1 else new_value)
+def update_value(value: Array, new_value: Array) -> Array:
+    return value + new_value if value.ndim == 0 \
+        else (jnp.concatenate((value, new_value)) if value.ndim == 1 else new_value)
 
+
+def accumulate_output(new_output: Any, cum_output: Optional[Any]) -> Any:
     return new_output if cum_output is None else jax.tree_multimap(update_value, cum_output, new_output)
 
 

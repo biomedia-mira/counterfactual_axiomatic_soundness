@@ -1,13 +1,14 @@
-from typing import Dict, Tuple, Optional, Any
+from typing import Any, Callable, Dict, Tuple
 
 import jax.numpy as jnp
 
-from components import Array, Shape, KeyArray, StaxLayer, Params
+from components import Array, KeyArray
+
+# [[[image, parents]], [score, output]]
+ClassifierFn = Callable[[Tuple[Array, Array]], Tuple[Array, Any]]
+# [[image, parents, do_parents], do_image]
+MechanismFn = Callable[[KeyArray, Array, Dict[str, Array], Dict[str, Array]], Array]
 
 
 def concat_parents(parents: Dict[str, Array]) -> Array:
     return jnp.concatenate([parents[parent_name] for parent_name in sorted(parents.keys())], axis=-1)
-
-
-def rescale(x: Array, x_range: Tuple[float, float], target_range: Tuple[float, float]) -> Array:
-    return (x - x_range[0]) / (x_range[1] - x_range[0]) * (target_range[1] - target_range[0]) + target_range[0]

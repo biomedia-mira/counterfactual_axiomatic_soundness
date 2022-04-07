@@ -8,12 +8,8 @@ from jax.example_libraries.optimizers import Optimizer, OptimizerState, ParamsFn
 from components import Array, KeyArray, Model, Params, Shape, StaxLayer, UpdateFn
 from components.f_gan import f_gan
 from datasets.utils import MarginalDistribution
+from models.utils import ClassifierFn, MechanismFn
 from models.utils import concat_parents
-
-# [[[image, parents]], [score, output]]
-ClassifierFn = Callable[[Tuple[Array, Array]], Tuple[Array, Any]]
-# [[image, parents, do_parents], do_image]
-MechanismFn = Callable[[KeyArray, Array, Dict[str, Array], Dict[str, Array]], Array]
 
 
 def l2(x: Array) -> Array:
@@ -55,7 +51,7 @@ def functional_counterfactual(do_parent_name: str,
         return concat_parents({p_name: array for p_name, array in parents.items() if p_name in do_parent_names})
 
     def apply_mechanism(params: Params, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
-        return mechanism_apply_fn(params, image, parents_to_array(parents), parents_to_array(do_parents))
+        return mechanism_apply_fn(params, (image, parents_to_array(parents), parents_to_array(do_parents)))
 
     def sampling_fn(rng: KeyArray, sample_shape: Shape, parents: Dict[str, Array]) -> Tuple[
         Dict[str, Array], Optional[Array]]:
@@ -89,7 +85,7 @@ def functional_counterfactual(do_parent_name: str,
             composition_constraint = jnp.mean(l2(image - image_null_intervention))
             loss = loss + composition_constraint
             output.update({f'image_null_intervention_{i:d}': image_null_intervention[order],
-                           f'composition_constraint_{i:d}': composition_constraint})
+                           f'composition_constraint_{i:d}': composition_constraint[jnp.newaxis]})
 
         # reversibility constraint
         if _is_invertible:
@@ -103,7 +99,7 @@ def functional_counterfactual(do_parent_name: str,
                 reversibility_constraint = jnp.mean(l2(image - image_cycle))
                 loss = loss + reversibility_constraint
                 output.update({f'image_cycle_{i:d}': image_cycle,
-                               f'reversibility_constraint_{i:d}': reversibility_constraint})
+                               f'reversibility_constraint_{i:d}': reversibility_constraint[jnp.newaxis]})
 
         return loss, {'loss': loss[jnp.newaxis], **output}
 

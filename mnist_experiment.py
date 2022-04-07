@@ -20,94 +20,44 @@ tf.config.experimental.set_visible_devices([], 'GPU')
 scenarios = {'digit_colour_scenario': digit_colour_scenario,
              'digit_fracture_colour_scenario': digit_fracture_colour_scenario}
 
-hidden_dim = 64
-classifier_layers = \
-    (ResBlock(hidden_dim, filter_shape=(4, 4), strides=(2, 2)),
-     ResBlock(hidden_dim, filter_shape=(4, 4), strides=(2, 2)),
-     ResBlock(hidden_dim, filter_shape=(4, 4), strides=(2, 2)),
-     cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
+hidden_dim = 256
+n_channels = hidden_dim // 4
 
-critic = serial(BroadcastTogether(-1), FanInConcat(-1), *classifier_layers)
+classifier_layers = \
+    (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+     Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+     Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+     Flatten, Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu)
+
+critic = serial(BroadcastTogether(-1), FanInConcat(-1),
+                ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
+                ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
+                ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
+                cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
 encoder_layers = \
-    (Conv(hidden_dim, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-     Conv(hidden_dim, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+    (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+     Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
      cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
 
 decoder_layers = \
-    (Dense(7 * 7 * hidden_dim), LeakyRelu, Reshape((-1, 7, 7, hidden_dim)),
-     Resize((-1, 14, 14, hidden_dim)), Conv(hidden_dim, filter_shape=(4, 4), strides=(1, 1), padding='SAME'),
+    (Dense(hidden_dim), LeakyRelu, Dense(7 * 7 * n_channels), LeakyRelu, Reshape((-1, 7, 7, n_channels)),
+     Resize((-1, 14, 14, n_channels)), Conv(n_channels, filter_shape=(4, 4), strides=(1, 1), padding='SAME'),
      PixelNorm2D, LeakyRelu,
-     Resize((-1, 28, 28, hidden_dim)), Conv(hidden_dim, filter_shape=(4, 4), strides=(1, 1), padding='SAME'),
+     Resize((-1, 28, 28, n_channels)), Conv(n_channels, filter_shape=(4, 4), strides=(1, 1), padding='SAME'),
      PixelNorm2D, LeakyRelu,
      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'))
 
-mechanism = serial(parallel(encoder_layers,
+mechanism = serial(parallel(serial(*encoder_layers),
                             serial(Dense(hidden_dim), LeakyRelu),
                             serial(Dense(hidden_dim), LeakyRelu)),
-                   FanInConcat(-1), decoder_layers, Tanh)
+                   FanInConcat(-1), *decoder_layers, Tanh)
 
 # For the baseline C-VAE
-# latent_dim = 16
-# vae_encoder = serial(parallel(serial(*encoder_layers), Pass), FanInConcat(axis=-1),
-#                      Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu,
-#                      FanOut(2), parallel(Dense(latent_dim), serial(Dense(latent_dim))))
-#
-# vae_decoder = serial(FanInConcat(axis=-1), *decoder_layers)
-
-
-### VAE
 latent_dim = 16
-hidden_dim = 256
-n_channels = 64
-
-_enc = (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-        Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-        cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
-_dec = (Dense(hidden_dim), LeakyRelu, Dense(n_channels * 7 * 7), LeakyRelu,
-        Reshape((-1, 7, 7, n_channels)), Resize((-1, 14, 14, n_channels)),
-        Conv(n_channels, filter_shape=(5, 5), strides=(1, 1), padding='SAME'), LeakyRelu,
-        Resize((-1, 28, 28, n_channels)),
-        Conv(3, filter_shape=(5, 5), strides=(1, 1), padding='SAME'),
-        Conv(3, filter_shape=(1, 1), strides=(1, 1), padding='SAME'))
-vae_encoder = serial(parallel(serial(*_enc), Pass), FanInConcat(axis=-1),
+vae_encoder = serial(parallel(serial(*encoder_layers), Pass), FanInConcat(axis=-1),
                      Dense(hidden_dim), LeakyRelu,
-                     FanOut(2), parallel(Dense(latent_dim), serial(Dense(latent_dim))))
-vae_decoder = serial(FanInConcat(axis=-1), *_dec)
-
-
-##
-
-#######################################################################
-
-# enc_init_fn, enc_apply_fn = serial(*encoder_layers)
-# dec_init_fn, dec_apply_fn = serial(*decoder_layers, Tanh)
-#
-
-
-##
-
-# mechanism_decoder_layers = \
-#     (Dense(7 * 7 * hidden_dim), LeakyRelu, Reshape((-1, 7, 7, hidden_dim)),
-#      ConvTranspose(hidden_dim, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      ConvTranspose(hidden_dim, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'))
-
-# original
-# classifier_layers = \
-#     (ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
-#      ResBlock(64 * 2, filter_shape=(4, 4), strides=(2, 2)),
-#      ResBlock(64 * 3, filter_shape=(4, 4), strides=(2, 2)),
-#      cast(StaxLayer, Flatten), Dense(128), LeakyRelu)
-# mechanism_encoder_layers = \
-#     (Conv(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      Conv(128, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      Reshape((-1, 7 * 7 * 128)), Dense(1024), LeakyRelu)
-#
-# mechanism_decoder_layers = \
-#     (Dense(7 * 7 * 128), LeakyRelu, Reshape((-1, 7, 7, 128)),
-#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      ConvTranspose(64, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-#      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'))
+                     FanOut(2), parallel(Dense(latent_dim), Dense(latent_dim)))
+vae_decoder = serial(FanInConcat(axis=-1), *decoder_layers)
 
 
 def get_classifiers(job_dir: Path,
@@ -143,6 +93,7 @@ def get_baseline(job_dir: Path,
     train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
     parent_names = list(parent_dims.keys())
     parent_name = 'all'
+
     model, get_mechanism_fn = vae_gan(parent_dims=parent_dims,
                                       marginal_dists=marginals,
                                       critic=critic,
@@ -151,7 +102,8 @@ def get_baseline(job_dir: Path,
                                       from_joint=from_joint)
     train_data, test_data = prep_mechanism_data(parent_name, parent_names, from_joint, train_datasets,
                                                 test_dataset, batch_size=512)
-    optimizer = optimizers.adam(step_size=1e-3)
+    schedule = optimizers.piecewise_constant(boundaries=[3000, 6000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
+    optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
     params = train(model=model,
                    job_dir=job_dir / f'do_{parent_name}',
                    seed=seed,
@@ -192,8 +144,7 @@ def get_mechanisms(job_dir: Path,
                                                             from_joint=from_joint)
         train_data, test_data = prep_mechanism_data(parent_name, parent_names, from_joint, train_datasets,
                                                     test_dataset, batch_size=512)
-
-        schedule = optimizers.piecewise_constant(boundaries=[2000, 4000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
+        schedule = optimizers.piecewise_constant(boundaries=[3000, 6000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
         optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
         params = train(model=model,
                        job_dir=job_dir / f'do_{parent_name}',
@@ -202,7 +153,7 @@ def get_mechanisms(job_dir: Path,
                        test_data=test_data,
                        input_shape=input_shape,
                        optimizer=optimizer,
-                       num_steps=5000,
+                       num_steps=10000,
                        log_every=10,
                        eval_every=250,
                        save_every=250,
@@ -282,9 +233,11 @@ if __name__ == '__main__':
                for baseline, partial_mechanisms, constraint_function_power, (confound, de_confound)
                in product((False, True), (False, True), (1, 3), ((True, True), (False, False)))]
 
-    configs = [Config(True, False, 1, False, False)]
+    # configs = [Config(True, False, 1, False, False)]
 
     for config in configs:
+        if config.baseline:
+            continue
         run_experiment(args.job_dir,
                        args.data_dir,
                        args.scenario_name,

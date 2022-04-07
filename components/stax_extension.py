@@ -93,7 +93,7 @@ def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[in
     def apply_fn(params: Params, inputs: Array, **kwargs: Any) -> Array:
         output = _apply_fn(params, inputs)
         residual = jax.image.resize(jnp.repeat(inputs, output.shape[-1] // inputs.shape[-1], axis=-1),
-                                    shape=output.shape, method='bilinear')
+                                    shape=output.shape, method='nearest')
         return output + residual
 
     return _init_fn, apply_fn
