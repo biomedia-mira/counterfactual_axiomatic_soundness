@@ -11,7 +11,7 @@ from jax.example_libraries.stax import Conv, Dense, FanInConcat, FanOut, Flatten
 from components.stax_extension import BroadcastTogether, Pass, PixelNorm2D, ResBlock, Reshape, Resize, StaxLayer
 from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario, Scenario
 from identifiability_tests import evaluate, print_test_results
-from models import classifier, ClassifierFn, functional_counterfactual, MechanismFn, vae_gan
+from models import classifier, ClassifierFn, conditional_vae, functional_counterfactual, MechanismFn
 from train import train
 from utils import compile_fn, prep_classifier_data, prep_mechanism_data
 
@@ -20,6 +20,7 @@ tf.config.experimental.set_visible_devices([], 'GPU')
 scenarios = {'digit_colour_scenario': digit_colour_scenario,
              'digit_fracture_colour_scenario': digit_fracture_colour_scenario}
 
+latent_dim = 16
 hidden_dim = 256
 n_channels = hidden_dim // 4
 
@@ -47,17 +48,14 @@ decoder_layers = \
      PixelNorm2D, LeakyRelu,
      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'))
 
-mechanism = serial(parallel(serial(*encoder_layers),
-                            serial(Dense(hidden_dim), LeakyRelu),
-                            serial(Dense(hidden_dim), LeakyRelu)),
-                   FanInConcat(-1), *decoder_layers, Tanh)
-
-# For the baseline C-VAE
-latent_dim = 16
 vae_encoder = serial(parallel(serial(*encoder_layers), Pass), FanInConcat(axis=-1),
                      Dense(hidden_dim), LeakyRelu,
                      FanOut(2), parallel(Dense(latent_dim), Dense(latent_dim)))
+
 vae_decoder = serial(FanInConcat(axis=-1), *decoder_layers)
+
+mechanism = serial(parallel(serial(*encoder_layers), Pass, Pass), FanInConcat(-1),
+                   Dense(hidden_dim), LeakyRelu, *decoder_layers, Tanh)
 
 
 def get_classifiers(job_dir: Path,
@@ -93,24 +91,20 @@ def get_baseline(job_dir: Path,
     train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
     parent_names = list(parent_dims.keys())
     parent_name = 'all'
-
-    model, get_mechanism_fn = vae_gan(parent_dims=parent_dims,
-                                      marginal_dists=marginals,
-                                      critic=critic,
-                                      vae_encoder=vae_encoder,
-                                      vae_decoder=vae_decoder,
-                                      from_joint=from_joint)
+    model, get_mechanism_fn = conditional_vae(parent_dims=parent_dims,
+                                              marginal_dists=marginals,
+                                              vae_encoder=vae_encoder,
+                                              vae_decoder=vae_decoder,
+                                              from_joint=from_joint)
     train_data, test_data = prep_mechanism_data(parent_name, parent_names, from_joint, train_datasets,
                                                 test_dataset, batch_size=512)
-    schedule = optimizers.piecewise_constant(boundaries=[3000, 6000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
-    optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
     params = train(model=model,
                    job_dir=job_dir / f'do_{parent_name}',
                    seed=seed,
                    train_data=train_data,
                    test_data=test_data,
                    input_shape=input_shape,
-                   optimizer=optimizer,
+                   optimizer=optimizers.adam(step_size=1e-3),
                    num_steps=10000,
                    log_every=10,
                    eval_every=250,
@@ -233,11 +227,7 @@ if __name__ == '__main__':
                for baseline, partial_mechanisms, constraint_function_power, (confound, de_confound)
                in product((False, True), (False, True), (1, 3), ((True, True), (False, False)))]
 
-    # configs = [Config(True, False, 1, False, False)]
-
     for config in configs:
-        if config.baseline:
-            continue
         run_experiment(args.job_dir,
                        args.data_dir,
                        args.scenario_name,

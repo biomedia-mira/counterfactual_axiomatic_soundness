@@ -1,17 +1,11 @@
 from functools import partial
 from typing import Any, Dict, Tuple
 
+import jax.nn as nn
 import jax.numpy as jnp
 from jax import random, vmap
 
 from components import Array, KeyArray, Params, Shape, StaxLayer
-
-import jax.nn as nn
-
-
-# for some reason using this makes the VAE ignore the conditioning
-def __softplus(x: Array, threshold: float = 20.) -> Array:
-    return jnp.where(x < threshold, nn.softplus(x), x)
 
 
 def rescale(x: Array, x_range: Tuple[float, float], target_range: Tuple[float, float]) -> Array:
@@ -19,8 +13,13 @@ def rescale(x: Array, x_range: Tuple[float, float], target_range: Tuple[float, f
 
 
 @vmap
-def calc_kl(mean: Array, variance: Array, eps: float = 1e-12) -> Array:
+def calc_kl(mean: Array, scale: Array, eps: float = 1e-12) -> Array:
+    variance = scale ** 2.
     return 0.5 * jnp.sum(variance + mean ** 2. - 1. - jnp.log(variance + eps))
+
+
+def rsample(rng: KeyArray, mean: Array, scale: Array) -> Array:
+    return mean + scale * random.normal(rng, mean.shape)
 
 
 @vmap
@@ -31,10 +30,6 @@ def calc_bernoulli_log_pdf(image: Array, recon: Array, eps: float = 1e-12) -> Ar
 @vmap
 def calc_normal_log_pdf(image: Array, recon: Array, variance: float = .1) -> Array:
     return -.5 * jnp.sum((image - recon) ** 2. / variance + jnp.log(2 * jnp.pi * variance))
-
-
-def rsample(rng: KeyArray, mean: Array, scale: Array) -> Array:
-    return mean + scale * random.normal(rng, mean.shape)
 
 
 def c_vae(encoder: StaxLayer,
@@ -60,19 +55,19 @@ def c_vae(encoder: StaxLayer,
 
     def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Tuple[Array, Array, Dict[str, Array]]:
         enc_params, dec_params = params
-        x, c = inputs
+        x, z_c, y_c = inputs
         x = _rescale(x)
-        mean_z, _scale_z = enc_apply_fn(enc_params, (x, c))
-        var_z = _scale_z ** 2.
-        z = rsample(rng, mean_z, _scale_z)  # in theory scale_z must be positive but in practise it does not matter
-        recon = dec_apply_fn(dec_params, (z, c))
+        mean_z, _scale_z = enc_apply_fn(enc_params, (x, z_c))
+        scale_z = nn.softplus(_scale_z)
+        z = rsample(rng, mean_z, scale_z)  # in theory scale_z must be positive but in practise it does not matter
+        recon = dec_apply_fn(dec_params, (z, y_c))
         recon = nn.sigmoid(recon) if bernoulli_ll else recon
         log_px = calc_ll(x, recon)
-        kl = calc_kl(mean_z, var_z)
+        kl = calc_kl(mean_z, scale_z)
         elbo = log_px - beta * kl
         loss = jnp.mean(-elbo)
         avg_mean_z = jnp.mean(mean_z, axis=-1)
-        avg_scale_z = jnp.mean(_scale_z, axis=-1)
+        avg_scale_z = jnp.mean(scale_z, axis=-1)
         snr = jnp.abs(avg_mean_z / avg_scale_z)
         recon = _undo_rescale(recon)
         return loss, recon, {'recon': recon, 'log_px': log_px, 'kl': kl, 'elbo': elbo,

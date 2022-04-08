@@ -1,5 +1,5 @@
 from models.classifier import classifier
 from models.functional_counterfactual import ClassifierFn, MarginalDistribution, MechanismFn, functional_counterfactual
-from models.vae_gan import vae_gan
+from models.conditional_vae import conditional_vae
 
-__all__ = ['classifier', 'functional_counterfactual', 'vae_gan', 'ClassifierFn', 'MechanismFn', 'MarginalDistribution']
+__all__ = ['classifier', 'functional_counterfactual', 'conditional_vae', 'ClassifierFn', 'MechanismFn', 'MarginalDistribution']
