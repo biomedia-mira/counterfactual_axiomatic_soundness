@@ -146,20 +146,20 @@ def create_confounded_mnist_dataset(data_dir: Path,
     ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False,
                                   data_dir=f'{str(data_dir)}/mnist', as_supervised=True)
 
-    encode_fn = get_encode_fn(parent_dims)
     dataset_dir = Path(f'{str(data_dir)}/{dataset_name}')
     train_data, train_parents = load_cached_dataset(dataset_dir / 'train', ds_train, train_confounding_fns, parent_dims)
     test_data, _ = load_cached_dataset(dataset_dir / 'test', ds_test, test_confounding_fns, parent_dims)
+    encode_fn = get_encode_fn(parent_dims)
+    train_data = train_data.map(encode_fn)
+    test_data = test_data.map(encode_fn)
 
     train_data_dict, marginals = get_marginal_datasets(train_data, train_parents, parent_dims)
     train_data_dict = train_data_dict if de_confound else dict.fromkeys(train_data_dict.keys(), train_data)
 
     def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
-        return layers.RandomCrop(28, 28)(tf.pad(image, ((2, 2), (2, 2), (0, 0)))), parents
+        return layers.RandomCrop(28, 28)(tf.pad(image, ((2, 2), (2, 2), (0, 0)), mode='constant', constant_values=-1.)), parents
 
     train_data_dict = jax.tree_map(lambda ds: ds.map(augment), train_data_dict)
-    train_data_dict = jax.tree_map(lambda ds: ds.map(encode_fn), train_data_dict)
-    test_data = test_data.map(encode_fn)
 
     if plot:
         for key, dataset in train_data_dict.items():
