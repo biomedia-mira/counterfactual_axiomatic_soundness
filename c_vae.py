@@ -18,6 +18,8 @@ from jax.image import resize
 from jax.nn import softplus
 from jax.random import KeyArray
 from jax.tree_util import tree_map, tree_reduce
+from optax import softmax_cross_entropy
+
 from datasets.confounded_mnist import digit_colour_scenario
 from train import Array, Model, Shape, StaxLayer, to_numpy_iterator, train
 
@@ -323,37 +325,120 @@ def flax_cvae_wrapper(latent_dim, hidden_dim):
     return init_fn, apply_fn, init_optimizer_fn
 
 
+##
+
+
+def classifier(num_classes: int, parent_name: str):
+    width = 128
+    _init_fn, _apply_fn = serial(Conv(width // 4, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Relu,
+                                 Conv(width // 4, filter_shape=(3, 3), strides=(2, 2), padding='SAME'), Relu,
+                                 Conv(width // 4, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Relu,
+                                 Conv(width // 4, filter_shape=(3, 3), strides=(2, 2), padding='SAME'), Relu,
+                                 Conv(width // 4, filter_shape=(3, 3), strides=(1, 1), padding='SAME'), Relu,
+                                 Conv(width // 4, filter_shape=(3, 3), strides=(2, 2), padding='SAME'), Relu,
+                                 Flatten, Dense(width * 2), Relu, Dense(num_classes))
+
+    def apply_fn(params, inputs, **kwargs):
+        x, parents = inputs
+        y = parents[parent_name]
+        y_hat = _apply_fn(params, x)
+        loss = jnp.mean(softmax_cross_entropy(logits=y_hat, labels=y))
+        pred = jnp.argmax(y_hat, axis=-1)
+        return loss, {'pred': jnp.squeeze(pred), 'loss': loss[jnp.newaxis], 'accuracy': jnp.mean(pred == jnp.argmax(y, axis=-1))[jnp.newaxis]}
+
+    def init_optimizer_fn(params: Params, optimizer: Optimizer) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
+        opt_init, opt_update, get_params = optimizer
+
+        @jit
+        def update(i: int, opt_state: OptimizerState, inputs: Any, rng: KeyArray) -> Tuple[OptimizerState, Array, Any]:
+            (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs)
+            opt_state = opt_update(i, grads, opt_state)
+
+            return opt_state, loss, outputs
+
+        return opt_init(params), update, get_params
+
+    return _init_fn, apply_fn, init_optimizer_fn
+
+
 if __name__ == '__main__':
     data_dir = Path('/vol/biomedic/users/mm6818/projects/grand_canyon/data')
-    train_datasets, test_dataset, parent_dims, _, marginals, input_shape = digit_colour_scenario(data_dir, False, False)
-    parent_names = parent_dims.keys()
+train_datasets, test_dataset, parent_dims, _, marginals, input_shape = digit_colour_scenario(data_dir,
+                                                                                             False, False)
+parent_names = parent_dims.keys()
 
-    batch_size = 512
-    train_data = to_numpy_iterator(train_datasets[frozenset()], batch_size, drop_remainder=True)
-    test_data = to_numpy_iterator(test_dataset, batch_size, drop_remainder=False)
+batch_size = 512
+train_data = to_numpy_iterator(train_datasets[frozenset()], batch_size, drop_remainder=True)
+test_data = to_numpy_iterator(test_dataset, batch_size, drop_remainder=False)
 
-    model = standard_vae(parent_dims, latent_dim=16, hidden_dim=256)
-    params = train(model=model,
-                   job_dir=Path('/tmp/test_job_stax'),
-                   seed=32345,
-                   train_data=train_data,
-                   test_data=test_data,
-                   input_shape=input_shape,
-                   optimizer=optimizers.adam(step_size=1e-3),
-                   num_steps=10000,
-                   log_every=1,
-                   eval_every=250,
-                   save_every=250)
+# digit classifier
+classifier_digit = classifier(10, 'digit')
+classifier_digit_params = train(model=classifier_digit,
+                                job_dir=Path('/tmp/test_job/classifier_digit'),
+                                seed=32345,
+                                train_data=train_data,
+                                test_data=test_data,
+                                input_shape=input_shape,
+                                optimizer=optimizers.adam(step_size=1e-3),
+                                num_steps=10000,
+                                log_every=1,
+                                eval_every=250,
+                                save_every=250)
+# colour classifier
+classifier_colour = classifier(10, 'colour')
+classifier_colour_params = train(model=classifier_colour,
+                                 job_dir=Path('/tmp/test_job/classifier_colour'),
+                                 seed=32345,
+                                 train_data=train_data,
+                                 test_data=test_data,
+                                 input_shape=input_shape,
+                                 optimizer=optimizers.adam(step_size=1e-3),
+                                 num_steps=10000,
+                                 log_every=1,
+                                 eval_every=250,
+                                 save_every=250)
 
-    model = flax_cvae_wrapper(latent_dim=16, hidden_dim=256)
-    params = train(model=model,
-                   job_dir=Path('/tmp/test_job_flax'),
-                   seed=32345,
-                   train_data=train_data,
-                   test_data=test_data,
-                   input_shape=input_shape,
-                   optimizer=optimizers.adam(step_size=1e-3),
-                   num_steps=10000,
-                   log_every=1,
-                   eval_every=250,
-                   save_every=250)
+# Stax
+stax_model = standard_vae(parent_dims, latent_dim=16, hidden_dim=256)
+stax_params = train(model=stax_model,
+                    job_dir=Path('/tmp/test_job/stax'),
+                    seed=32345,
+                    train_data=train_data,
+                    test_data=test_data,
+                    input_shape=input_shape,
+                    optimizer=optimizers.adam(step_size=1e-3),
+                    num_steps=10000,
+                    log_every=1,
+                    eval_every=250,
+                    save_every=250)
+
+# Flax
+flax_model = flax_cvae_wrapper(latent_dim=16, hidden_dim=256)
+flax_params = train(model=flax_model,
+                    job_dir=Path('/tmp/test_job/flax'),
+                    seed=32345,
+                    train_data=train_data,
+                    test_data=test_data,
+                    input_shape=input_shape,
+                    optimizer=optimizers.adam(step_size=1e-3),
+                    num_steps=10000,
+                    log_every=1,
+                    eval_every=250,
+                    save_every=250)
+exit(1)
+rng = random.PRNGKey(66)
+results = {'stax': {'digit': [], 'colour': []}, 'flax': {'digit': {}, 'colour': {}}}
+for inputs in test_data:
+    x, parents = inputs
+    random_parents = {
+        p_name: jax.nn.one_hot(jax.random.randint(_rng, shape=(x.shape[0],), minval=0, maxval=10), num_classes=10)
+        for _rng, p_name in zip(random.split(rng, len(parent_dims)), parent_dims.keys())}
+    # Flax
+    x_flax = flax_model[1](flax_params, (x, random_parents), rng)[1]['recon']
+    digit_pred_flax = classifier_digit[1](classifier_digit_params, (x_flax, random_parents))[0]['pred']
+    colour_pred_flax = classifier_digit[1](classifier_colour_params, (x_flax, random_parents))[0]['pred']
+    results['flax']['digit'].append(random_parents['digit'] == digit_pred_flax)
+    # Stax
+    x_stax = stax_model[1](flax_params, (x, random_parents), rng)[1]['recon']
+    digit_pred_flax = classifier_digit[1](classifier_digit_params, (x_stax, random_parents))[0]['pred']
+    colour_pred_flax = classifier_digit[1](classifier_colour_params, (x_stax, random_parents))[0]['pred']

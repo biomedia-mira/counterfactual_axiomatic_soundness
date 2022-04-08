@@ -77,6 +77,8 @@ def train(model: Model,
           eval_every: int,
           save_every: int) -> Params:
     model_path = job_dir / f'model.npy'
+    if model_path.exists():
+        return np.load(str(model_path), allow_pickle=True)
     job_dir.mkdir(exist_ok=True, parents=True)
     train_writer = get_writer_fn(job_dir, 'train')
     test_writer = get_writer_fn(job_dir, 'test')
@@ -107,3 +109,5 @@ def train(model: Model,
             jnp.save(str(model_path), get_params(opt_state))
 
     return get_params(opt_state)
+
+
