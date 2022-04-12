@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import jax.random as random
 import matplotlib.pyplot as plt
 import numpy as np
+import tensorflow as tf
 from jax.tree_util import tree_flatten, tree_unflatten
 from numpy.typing import NDArray
 
@@ -174,7 +175,7 @@ def evaluate(job_dir: Path,
              is_invertible: Dict[str, bool],
              marginals: Dict[str, MarginalDistribution],
              pseudo_oracles: Dict[str, ClassifierFn],
-             test_set: Any,
+             test_set: tf.data.Dataset,
              num_batches_to_plot: int = 1,
              overwrite: bool = False) -> TestResult:
     results_path = (job_dir / 'results.pickle')
