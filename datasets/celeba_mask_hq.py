@@ -1,6 +1,6 @@
 from itertools import product
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Callable, Dict, List, Optional, Tuple
 
 import jax
 import matplotlib.pyplot as plt
@@ -12,8 +12,9 @@ from numpy.typing import NDArray
 from PIL import Image
 from scipy.stats.contingency import crosstab
 from tqdm import tqdm
-from datasets.utils import Scenario
+
 from datasets.utils import get_marginal_datasets
+from datasets.utils import Scenario
 
 
 # Colligation/Yule/Phi coefficient https://en.wikipedia.org/wiki/Coefficient_of_colligation
@@ -133,7 +134,7 @@ def mustache_goatee_scenario(data_dir: Path, raw_data_dir: Optional[Path] = None
     is_invertible = {'goatee': True, 'mustache': True}
     images, parents = get_celeb_a_mask_hq_dataset(data_dir, raw_data_dir)
     indices = np.where(parents['Male'])[0]
-    parents = {key: value for key, value in parents.items() if key in ['Goatee', 'Mustache']}
+    parents = {key.lower(): value for key, value in parents.items() if key in ['Goatee', 'Mustache']}
     # train test split
     rng = np.random.RandomState(1)
     rng.shuffle(indices)

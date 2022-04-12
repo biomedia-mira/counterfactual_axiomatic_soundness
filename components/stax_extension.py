@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable, Sequence, Tuple, Union
+from typing import Any, Callable, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -92,9 +92,12 @@ def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[in
 
     def apply_fn(params: Params, inputs: Array, **kwargs: Any) -> Array:
         output = _apply_fn(params, inputs)
-        residual = jax.image.resize(jnp.repeat(inputs, output.shape[-1] // inputs.shape[-1], axis=-1),
-                                    shape=output.shape, method='nearest')
-        return output + residual
+        if output.shape[-1] < inputs.shape[-1]:
+            _residual = inputs[..., :output.shape[-1]]
+        else:
+            _residual = jnp.repeat(inputs, output.shape[-1] // inputs.shape[-1], axis=-1)
+        output = output + jax.image.resize(_residual, shape=output.shape, method='nearest')
+        return output
 
     return _init_fn, apply_fn
 
