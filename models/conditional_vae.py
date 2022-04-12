@@ -28,16 +28,15 @@ def conditional_vae(parent_dims: Dict[str, int],
         return output_shape, params
 
     def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Tuple[Array, Dict[str, Array]]:
-        vae_params, gan_params = params
         k1, k2 = random.split(rng, 2)
         image, parents = inputs[source_dist]
         _parents = concat_parents(parents)
-        loss, recon, vae_output = _apply_fn(vae_params, (image, _parents, _parents), k1)
+        loss, recon, vae_output = _apply_fn(params, (image, _parents, _parents), k1)
         # conditional samples just for visualisation, not part of training
         do_parents = {p_name: marginal_dists[p_name].sample(_rng, (image.shape[0],))
                       for _rng, p_name in zip(random.split(k2, len(parent_names)), parent_names)}
         _do_parents = concat_parents(do_parents)
-        _, samples, _ = _apply_fn(vae_params, (image, _parents, _do_parents), k2)
+        _, samples, _ = _apply_fn(params, (image, _parents, _do_parents), k2)
         return loss, {'image': image, 'samples': samples, 'loss': loss[jnp.newaxis], **vae_output}
 
     def init_optimizer_fn(params: Params, optimizer: Optimizer) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
@@ -51,9 +50,9 @@ def conditional_vae(parent_dims: Dict[str, int],
 
         return opt_init(params), update, get_params
 
-    def get_mechanism_fn(params: Params):
+    def get_mechanism_fn(params: Params) -> MechanismFn:
         def mechanism_fn(rng: KeyArray, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
-            return _apply_fn(params[0], (image, concat_parents(parents), concat_parents(do_parents)), rng)[1]
+            return _apply_fn(params, (image, concat_parents(parents), concat_parents(do_parents)), rng)[1]
 
         return mechanism_fn
 
