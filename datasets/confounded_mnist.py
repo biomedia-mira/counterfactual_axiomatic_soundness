@@ -157,7 +157,8 @@ def create_confounded_mnist_dataset(data_dir: Path,
     train_data_dict = train_data_dict if de_confound else dict.fromkeys(train_data_dict.keys(), train_data)
 
     def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
-        return layers.RandomCrop(28, 28)(tf.pad(image, ((2, 2), (2, 2), (0, 0)), mode='constant', constant_values=-1.)), parents
+        return layers.RandomCrop(28, 28)(
+            tf.pad(image, ((2, 2), (2, 2), (0, 0)), mode='constant', constant_values=-1.)), parents
 
     train_data_dict = jax.tree_map(lambda ds: ds.map(augment), train_data_dict)
 
@@ -209,6 +210,35 @@ def digit_fracture_colour_scenario(data_dir: Path, confound: bool, de_confound: 
     train_confounding_fns = [train_fracture_fn, train_colourise_fn]
     test_confounding_fns = [test_fracture_fn, test_colourise_fn]
     dataset_name = 'mnist_digit_fracture_colour' + ('_confounded' if confound else '')
+    train_datasets, test_dataset, marginals, input_shape = \
+        create_confounded_mnist_dataset(data_dir, dataset_name, train_confounding_fns, test_confounding_fns,
+                                        parent_dims, de_confound)
+    return train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape
+
+
+def digit_thickness_colour_scenario(data_dir: Path, confound: bool, de_confound: bool) -> Scenario:
+    assert not (not confound and de_confound)
+    parent_dims = {'digit': 10, 'thickness': 2, 'colour': 10}
+    is_invertible = {'digit': False, 'thickness': True, 'colour': True}
+
+    even_heavy_cm = np.zeros(shape=(10, 2))
+    even_heavy_cm[0:-1:2] = (.1, .9)
+    even_heavy_cm[1::2] = (.9, .1)
+
+    test_thickness_cm = get_uniform_confusion_matrix(10, 2)
+    test_colourise_cm = get_uniform_confusion_matrix(10, 10)
+    train_thickness_cm = even_heavy_cm if confound else test_thickness_cm
+    train_colourise_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if confound else test_colourise_cm
+
+    function_dict = {0: get_thinning_fn(), 1: get_thickening_fn()}
+    train_thickness_fn = function_dict_to_confounding_fn(function_dict, train_thickness_cm)
+    test_thickness_fn = function_dict_to_confounding_fn(function_dict, test_thickness_cm)
+    train_colourise_fn = get_colourise_fn(train_colourise_cm)
+    test_colourise_fn = get_colourise_fn(test_colourise_cm)
+
+    train_confounding_fns = [train_thickness_fn, train_colourise_fn]
+    test_confounding_fns = [test_thickness_fn, test_colourise_fn]
+    dataset_name = 'mnist_digit_thickness_colour' + ('_confounded' if confound else '')
     train_datasets, test_dataset, marginals, input_shape = \
         create_confounded_mnist_dataset(data_dir, dataset_name, train_confounding_fns, test_confounding_fns,
                                         parent_dims, de_confound)

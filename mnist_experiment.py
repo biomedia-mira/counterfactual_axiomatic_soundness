@@ -1,22 +1,24 @@
 import argparse
 from dataclasses import dataclass
-from itertools import product
 from pathlib import Path
-from typing import cast, Dict, List, Optional
+from typing import cast, List
 
 import tensorflow as tf
 from jax.example_libraries import optimizers
 from jax.example_libraries.stax import Conv, Dense, FanInConcat, FanOut, Flatten, LeakyRelu, parallel, serial, Tanh
-from datasets.mnist_ood import get_coloured_kmnist
+
 from components.stax_extension import BroadcastTogether, Pass, PixelNorm2D, ResBlock, Reshape, Resize, StaxLayer
-from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario
+from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario, \
+    digit_thickness_colour_scenario
+from datasets.mnist_ood import get_coloured_kmnist
 from experiment import get_baseline, get_classifiers, get_mechanisms, TrainConfig
 from identifiability_tests import evaluate, print_test_results
 
 tf.config.experimental.set_visible_devices([], 'GPU')
 
 scenarios = {'digit_colour_scenario': digit_colour_scenario,
-             'digit_fracture_colour_scenario': digit_fracture_colour_scenario}
+             'digit_fracture_colour_scenario': digit_fracture_colour_scenario,
+             'digit_thickness_colour_scenario': digit_thickness_colour_scenario}
 
 hidden_dim = 256
 n_channels = hidden_dim // 4
@@ -168,20 +170,20 @@ if __name__ == '__main__':
     parser.add_argument('--seeds', dest='seeds', nargs="+", type=int, help='list of random seeds')
 
     args = parser.parse_args()
-    configs = [
-        Config(baseline=True, partial_mechanisms=False, constraint_function_power=1, confound=True, de_confound=True),
-        Config(baseline=True, partial_mechanisms=False, constraint_function_power=1, confound=False, de_confound=False),
-        Config(baseline=False, partial_mechanisms=True, constraint_function_power=1, confound=True, de_confound=True),
-        Config(baseline=False, partial_mechanisms=True, constraint_function_power=1, confound=False, de_confound=False),
-        Config(baseline=False, partial_mechanisms=False, constraint_function_power=1, confound=True, de_confound=True),
-        Config(baseline=False, partial_mechanisms=False, constraint_function_power=1, confound=False, de_confound=False)
-    ]
-    #
     # configs = [
     #     Config(baseline=True, partial_mechanisms=False, constraint_function_power=1, confound=True, de_confound=True),
+    #     Config(baseline=True, partial_mechanisms=False, constraint_function_power=1, confound=False, de_confound=False),
     #     Config(baseline=False, partial_mechanisms=True, constraint_function_power=1, confound=True, de_confound=True),
+    #     Config(baseline=False, partial_mechanisms=True, constraint_function_power=1, confound=False, de_confound=False),
     #     Config(baseline=False, partial_mechanisms=False, constraint_function_power=1, confound=True, de_confound=True),
+    #     Config(baseline=False, partial_mechanisms=False, constraint_function_power=1, confound=False, de_confound=False)
     # ]
+    #
+    configs = [
+        Config(baseline=True, partial_mechanisms=False, constraint_function_power=1, confound=True, de_confound=True),
+        Config(baseline=False, partial_mechanisms=True, constraint_function_power=1, confound=True, de_confound=True),
+        Config(baseline=False, partial_mechanisms=False, constraint_function_power=1, confound=True, de_confound=True),
+    ]
 
     for config in configs:
         run_experiment(args.job_dir,
