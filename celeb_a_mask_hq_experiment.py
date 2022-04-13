@@ -10,8 +10,7 @@ from components.stax_extension import BroadcastTogether, Pass, ResBlock, Reshape
 from datasets.celeba_mask_hq import mustache_goatee_scenario
 from experiment import get_baseline, get_classifiers, get_mechanisms, TrainConfig
 from identifiability_tests import evaluate, print_test_results
-import os
-# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
 tf.config.experimental.set_visible_devices([], 'GPU')
 
 hidden_dim = 256
