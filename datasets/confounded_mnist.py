@@ -222,8 +222,8 @@ def digit_thickness_colour_scenario(data_dir: Path, confound: bool, de_confound:
     is_invertible = {'digit': False, 'thickness': True, 'colour': True}
 
     even_heavy_cm = np.zeros(shape=(10, 2))
-    even_heavy_cm[0:-1:2] = (.1, .9)
-    even_heavy_cm[1::2] = (.9, .1)
+    even_heavy_cm[0:-1:2] = (.01, .99)
+    even_heavy_cm[1::2] = (.99, .01)
 
     test_thickness_cm = get_uniform_confusion_matrix(10, 2)
     test_colourise_cm = get_uniform_confusion_matrix(10, 10)
