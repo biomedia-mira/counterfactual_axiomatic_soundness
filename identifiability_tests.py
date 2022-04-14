@@ -12,9 +12,10 @@ import tensorflow as tf
 from jax.tree_util import tree_flatten, tree_unflatten
 from numpy.typing import NDArray
 
-from components import Array, KeyArray
+from core import Array, KeyArray
 from models import ClassifierFn, MarginalDistribution, MechanismFn
-from utils import flatten_nested_dict, to_numpy_iterator
+from core.utils import flatten_nested_dict
+from experiment import to_numpy_iterator
 
 TestResult = Dict[str, Union['TestResult', NDArray]]
 Test = Callable[[KeyArray, Array, Dict[str, Array]], Tuple[TestResult, NDArray]]

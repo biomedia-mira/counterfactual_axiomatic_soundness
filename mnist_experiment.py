@@ -7,7 +7,7 @@ import tensorflow as tf
 from jax.example_libraries import optimizers
 from jax.example_libraries.stax import Conv, Dense, FanInConcat, FanOut, Flatten, LeakyRelu, parallel, serial, Tanh
 
-from components.stax_extension import BroadcastTogether, Pass, PixelNorm2D, ResBlock, Reshape, Resize, StaxLayer
+from core.staxplus import BroadcastTogether, Pass, PixelNorm2D, ResBlock, Reshape, Resize, StaxLayer
 from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario, \
     digit_thickness_colour_scenario
 from datasets.mnist_ood import get_coloured_kmnist

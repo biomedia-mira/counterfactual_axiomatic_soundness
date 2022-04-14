@@ -7,7 +7,7 @@ from jax import vmap
 from jax.example_libraries.stax import Conv, LeakyRelu, ones, serial, zeros
 from jax.nn import normalize
 
-from components import Array, KeyArray, Params, Shape, StaxLayer
+from core import Array, KeyArray, Params, Shape, StaxLayer
 
 
 def stax_wrapper(fn: Callable[[Array], Array]) -> StaxLayer:

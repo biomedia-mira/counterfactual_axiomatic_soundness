@@ -2,7 +2,7 @@ from typing import Any, Callable, Dict, Tuple
 
 import jax.numpy as jnp
 
-from components import Array, KeyArray
+from core import Array, KeyArray
 
 # [[[image, parents]], [score, output]]
 ClassifierFn = Callable[[Tuple[Array, Array]], Tuple[Array, Any]]

@@ -10,7 +10,7 @@ from numpy.typing import NDArray
 from skimage import draw, morphology, transform
 from tensorflow.keras import layers
 
-from components.stax_extension import Shape
+from core import Shape
 from datasets.morphomnist import skeleton
 from datasets.morphomnist.morpho import ImageMorphology
 from datasets.utils import ConfoundingFn, get_marginal_datasets, IMAGE, image_gallery, load_cached_dataset

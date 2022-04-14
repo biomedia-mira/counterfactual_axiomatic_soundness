@@ -5,7 +5,7 @@ import jax.nn as nn
 import jax.numpy as jnp
 from jax import random, vmap
 
-from components import Array, KeyArray, Params, Shape, StaxLayer
+from core import Array, KeyArray, Params, Shape, StaxLayer
 
 
 def rescale(x: Array, x_range: Tuple[float, float], target_range: Tuple[float, float]) -> Array:

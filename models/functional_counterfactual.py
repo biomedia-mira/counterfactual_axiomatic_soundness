@@ -2,11 +2,11 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 import jax.numpy as jnp
 import jax.random as random
-from jax import jit, tree_map, value_and_grad, vmap
-from jax.example_libraries.optimizers import Optimizer, OptimizerState, ParamsFn
+import optax
+from jax import tree_map, value_and_grad, vmap
 
-from components import Array, KeyArray, Model, Params, Shape, StaxLayer, UpdateFn
-from components.f_gan import f_gan
+from core import Array, GradientTransformation, KeyArray, Model, OptState, Params, Shape, StaxLayer
+from core.staxplus.f_gan import f_gan
 from datasets.utils import MarginalDistribution
 from models.utils import ClassifierFn, MechanismFn
 from models.utils import concat_parents
@@ -40,7 +40,7 @@ def functional_counterfactual(do_parent_name: str,
     mechanism_init_fn, mechanism_apply_fn = mechanism
     _is_invertible = all([is_invertible[parent_name] for parent_name in do_parent_names])
 
-    def init_fn(rng: KeyArray, input_shape: Shape) -> Params:
+    def init_fn(rng: KeyArray, input_shape: Shape) -> Tuple[Shape, Params]:
         c_shape = (-1, sum(parent_dims.values()))
         f_div_output_shape, f_div_params = divergence_init_fn(rng, (input_shape, c_shape))
         c_shape = (-1, sum([dim for p_name, dim in parent_dims.items() if p_name in do_parent_names]))
@@ -53,8 +53,8 @@ def functional_counterfactual(do_parent_name: str,
     def apply_mechanism(params: Params, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
         return mechanism_apply_fn(params, (image, parents_to_array(parents), parents_to_array(do_parents)))
 
-    def sampling_fn(rng: KeyArray, sample_shape: Shape, parents: Dict[str, Array]) -> Tuple[
-        Dict[str, Array], Optional[Array]]:
+    def sampling_fn(rng: KeyArray, sample_shape: Shape, parents: Dict[str, Array]) \
+            -> Tuple[Dict[str, Array], Optional[Array]]:
         new_parents = {p_name: marginal_dists[p_name].sample(_rng, sample_shape)
                        for _rng, p_name in zip(random.split(rng, len(do_parent_names)), do_parent_names)}
         do_parents = {**parents, **new_parents}
@@ -103,20 +103,18 @@ def functional_counterfactual(do_parent_name: str,
 
         return loss, {'loss': loss[jnp.newaxis], **output}
 
-    def init_optimizer_fn(params: Params, optimizer: Optimizer) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
-        opt_init, opt_update, get_params = optimizer
-
-        @jit
-        def update(i: int, opt_state: OptimizerState, inputs: Any, rng: KeyArray) -> Tuple[OptimizerState, Array, Any]:
-            (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
-            zero_grads = tree_map(lambda x: x * 0, grads)
-            opt_state = opt_update(i, (zero_grads[0], grads[1]), opt_state)
-            for _ in range(1):
-                (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
-                opt_state = opt_update(i, (grads[0], zero_grads[1]), opt_state)
-            return opt_state, loss, outputs
-
-        return opt_init(params), update, get_params
+    def update(params: Params, optimizer: GradientTransformation, opt_state: OptState, inputs: Any, rng: KeyArray) \
+            -> Tuple[Params, OptState, Array, Any]:
+        # step generator
+        (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(params, inputs, rng)
+        zero_grads = tree_map(lambda x: x * 0, grads)
+        updates, opt_state = optimizer.update((zero_grads[0], grads[1]), opt_state)
+        params = optax.apply_updates(params, updates)
+        # step discriminator
+        (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(params, inputs, rng)
+        updates, opt_state = optimizer.update((grads[0], zero_grads[1]), opt_state)
+        params = optax.apply_updates(params, updates)
+        return params, opt_state, loss, outputs
 
     def get_mechanism_fn(params: Params) -> MechanismFn:
         def mechanism_fn(rng: KeyArray, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
@@ -124,4 +122,4 @@ def functional_counterfactual(do_parent_name: str,
 
         return mechanism_fn
 
-    return (init_fn, apply_fn, init_optimizer_fn), get_mechanism_fn
+    return (init_fn, apply_fn, update), get_mechanism_fn

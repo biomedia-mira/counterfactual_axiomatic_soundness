@@ -1,11 +1,11 @@
 # https://arxiv.org/abs/1606.00709
-from typing import Any, Callable, Dict, Sequence, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 import jax.numpy as jnp
 from jax.example_libraries.stax import Dense, Flatten, serial
 from jax.lax import stop_gradient
 
-from components import Array, Params, StaxLayer
+from core import Array, Params, StaxLayer
 
 FDivergence = Tuple[Callable[[Array], Array], Callable[[Array], Array]]
 

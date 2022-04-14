@@ -12,10 +12,8 @@ from more_itertools import powerset
 from numpy.typing import NDArray
 from tqdm import tqdm
 
-from components import Array, KeyArray
-from components import Shape
+from core import Array, KeyArray, Shape
 
-warnings.filterwarnings('always')
 IMAGE = NDArray[np.uint8]
 ConfoundingFn = Callable[[IMAGE, int], Tuple[IMAGE, int]]
 

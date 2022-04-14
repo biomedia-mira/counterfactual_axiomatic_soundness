@@ -2,11 +2,11 @@ from typing import Any, Callable, Dict, Tuple
 
 import jax.numpy as jnp
 import jax.random as random
-from jax import jit, value_and_grad
-from jax.example_libraries.optimizers import Optimizer, OptimizerState, ParamsFn
+import optax
+from jax import value_and_grad
 
-from components import Array, KeyArray, Model, Params, Shape, StaxLayer, UpdateFn
-from components.conditional_vae import c_vae
+from core import Array, GradientTransformation, KeyArray, Model, OptState, Params, Shape, StaxLayer
+from core.staxplus.conditional_vae import c_vae
 from datasets.utils import MarginalDistribution
 from models.utils import concat_parents, MechanismFn
 
@@ -39,16 +39,12 @@ def conditional_vae(parent_dims: Dict[str, int],
         _, samples, _ = _apply_fn(params, (image, _parents, _do_parents), k2)
         return loss, {'image': image, 'samples': samples, 'loss': loss[jnp.newaxis], **vae_output}
 
-    def init_optimizer_fn(params: Params, optimizer: Optimizer) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
-        opt_init, opt_update, get_params = optimizer
-
-        @jit
-        def update(i: int, opt_state: OptimizerState, inputs: Any, rng: KeyArray) -> Tuple[OptimizerState, Array, Any]:
-            (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(get_params(opt_state), inputs, rng)
-            opt_state = opt_update(i, grads, opt_state)
-            return opt_state, loss, outputs
-
-        return opt_init(params), update, get_params
+    def update(params: Params, optimizer: GradientTransformation, opt_state: OptState, inputs: Any, rng: KeyArray) \
+            -> Tuple[Params, OptState, Array, Any]:
+        (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(params, inputs, rng=rng)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        params = optax.apply_updates(params, updates)
+        return params, opt_state, loss, outputs
 
     def get_mechanism_fn(params: Params) -> MechanismFn:
         def mechanism_fn(rng: KeyArray, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
@@ -56,4 +52,4 @@ def conditional_vae(parent_dims: Dict[str, int],
 
         return mechanism_fn
 
-    return (init_fn, apply_fn, init_optimizer_fn), get_mechanism_fn
+    return (init_fn, apply_fn, update), get_mechanism_fn

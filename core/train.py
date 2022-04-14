@@ -7,13 +7,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from clu.metric_writers import create_default_writer
-from jax.example_libraries.optimizers import Optimizer, Params
 from tqdm import tqdm
 
-from components import Model, Shape
-from components.stax_extension import Array
+from core import Array, GradientTransformation, Model, Params, Shape
 from datasets.utils import image_gallery
-from utils import flatten_nested_dict
+from core.utils import flatten_nested_dict
 
 
 def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str], None]] = None) \
@@ -50,12 +48,13 @@ def train(model: Model,
           train_data: Iterable,
           test_data: Optional[Iterable],
           input_shape: Shape,
-          optimizer: Optimizer,
+          optimizer: GradientTransformation,
           num_steps: int,
           log_every: int,
           eval_every: int,
           save_every: int,
-          overwrite: bool) -> Params:
+          overwrite: bool,
+          use_jit: bool = True) -> Params:
     model_path = job_dir / f'model.npy'
     if model_path.exists() and not overwrite:
         return np.load(str(model_path), allow_pickle=True)
@@ -63,16 +62,19 @@ def train(model: Model,
     train_writer = get_writer_fn(job_dir, 'train')
     test_writer = get_writer_fn(job_dir, 'test')
 
-    init_fn, apply_fn, init_optimizer_fn = model
+    init_fn, apply_fn, update = model
+    if use_jit:
+        init_fn = jax.jit(init_fn)
+        update = jax.jit(update)
+        apply_fn = jax.jit(apply_fn)
     rng = jax.random.PRNGKey(seed)
     _, params = init_fn(rng, input_shape)
-    opt_state, update, get_params = init_optimizer_fn(params, optimizer)
-
+    opt_state = optimizer.init(params)
     for step, inputs in tqdm(enumerate(itertools.cycle(train_data)), total=num_steps):
         if step >= num_steps:
             break
         rng, _ = jax.random.split(rng)
-        opt_state, loss, output = update(step, opt_state, inputs, rng)
+        params, opt_state, loss, output = update(params, optimizer, opt_state, inputs, rng)
         if step % log_every == 0:
             train_writer(output, step)
         if jnp.isnan(loss):
@@ -82,11 +84,11 @@ def train(model: Model,
             cum_output = None
             for test_inputs in test_data:
                 rng, _ = jax.random.split(rng)
-                _, output = apply_fn(get_params(opt_state), test_inputs, rng=rng)
+                _, output = apply_fn(params, test_inputs, rng=rng)
                 cum_output = accumulate_output(output, cum_output)
             test_writer(cum_output, step)
 
         if step % save_every == 0 or step == num_steps - 1:
-            jnp.save(str(model_path), get_params(opt_state))
+            jnp.save(str(model_path), params)
 
-    return get_params(opt_state)
+    return params

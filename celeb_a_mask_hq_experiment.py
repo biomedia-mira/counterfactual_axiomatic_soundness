@@ -16,8 +16,8 @@ from jax.example_libraries.optimizers import Optimizer, OptimizerState, ParamsFn
 from jax.example_libraries.stax import Conv, Dense, FanInConcat, FanOut, Flatten, LeakyRelu, parallel, serial, Tanh
 from jax.lax import stop_gradient
 
-from components import Array, KeyArray, Model, Params, Shape, StaxLayer, UpdateFn
-from components.stax_extension import BroadcastTogether, Pass, ResBlock, Reshape, Resize
+from core import Array, KeyArray, Model, Params, Shape, StaxLayer, UpdateFn
+from core.staxplus import BroadcastTogether, Pass, ResBlock, Reshape, Resize
 from datasets.celeba_mask_hq import mustache_goatee_scenario
 from experiment import get_baseline, get_classifiers, get_mechanisms
 from experiment import prep_mechanism_data, TrainConfig
