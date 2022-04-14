@@ -80,9 +80,10 @@ def synthesis_block(num_layers: int,
         block_params, to_rgb_params = params
         x, _ = block_apply_fn(block_params, (x, latent_code), rng=rng)
         if num_layers == 2:
+            assert y is not None
             y = upsample2d(y, f=setup_filter((1, 3, 3, 1)), up=2)
+        y = to_rgb_apply_fn(to_rgb_params, (x, latent_code), rng=rng)[0] + (y if y is not None else 0)
         # y = jax.image.resize(y, (*x.shape[:-1], y.shape[-1]), method='bilinear') if num_layers == 2 else y
-        y = to_rgb_apply_fn(to_rgb_params, (x, latent_code), rng=rng)[0] + y
         return x, y, latent_code
 
     return init_fn, apply_fn
@@ -108,7 +109,11 @@ def style_gan_generator(resolution: int,
     def nf(stage: int) -> int:
         return int(jnp.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max))
 
-    mapping_init_fn, mapping_apply_fn = mapping_network(z_dim, c_dim, w_dim, layer_features, num_layers,
+    mapping_init_fn, mapping_apply_fn = mapping_network(z_dim=z_dim,
+                                                        c_dim=c_dim,
+                                                        w_dim=w_dim,
+                                                        layer_features=layer_features,
+                                                        num_layers=num_layers,
                                                         lr_multiplier=mapping_lr_multiplier)
 
     resolution_log2 = int(jnp.log2(resolution))
@@ -138,7 +143,7 @@ def style_gan_generator(resolution: int,
         mapping_params, const_input, gen_params = params
         latent = mapping_apply_fn(mapping_params, z, c)
         x = jnp.repeat(const_input, z.shape[0], axis=0)
-        y = jnp.zeros((*x.shape[:-1], num_image_channels))
+        y = None
         x, y, latent = _gen_apply_fn(gen_params, (x, y, latent), rng=rng)
         return y
 
@@ -249,10 +254,15 @@ def style_gan(resolution: int,
         inputs = inputs[0]
         generator_params, discriminator_params = params
         z = random.normal(rng, (inputs.shape[0], z_dim))
-        fake_image = generator_apply_fn(generator_params, z)
-        return fake_image
+        fake_image = generator_apply_fn(generator_params, z, rng)
+        fake_logits = discriminator_apply_fn(discriminator_params, fake_image)
+        real_logits = discriminator_apply_fn(discriminator_params, inputs)
+        loss_fake = jax.nn.softplus(fake_logits)
+        loss_real = jax.nn.softplus(-real_logits)
+        loss = jnp.mean(loss_fake + loss_real)
+        return loss, {'fake_image': fake_image, 'loss_real': loss_real, 'loss_fake': loss_fake,
+                            'loss': loss[jnp.newaxis]}
 
-    @jit
     def step_generator(params: Params, inputs: Any, rng: KeyArray):
         inputs = inputs[0]
         generator_params, discriminator_params = params
@@ -272,7 +282,6 @@ def style_gan(resolution: int,
     #
     #     return loss, pl_mean_new
 
-    @jit
     def step_discriminator(params: Params, inputs: Any, rng: KeyArray):
         inputs = inputs[0]
         generator_params, discriminator_params = params
@@ -288,6 +297,7 @@ def style_gan(resolution: int,
     def init_optimizer_fn(params: Params, optimizer: Optimizer) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
         opt_init, opt_update, get_params = optimizer
 
+        @jit
         def update(i: int, opt_state: OptimizerState, inputs: Any, rng: KeyArray) -> Tuple[OptimizerState, Array, Any]:
             k1, k2 = random.split(rng, 2)
             (disc_loss, disc_outputs), disc_grads \
@@ -295,7 +305,7 @@ def style_gan(resolution: int,
             opt_state = opt_update(i, disc_grads, opt_state)
             (gen_loss, gen_outputs), gen_grads \
                 = value_and_grad(step_generator, has_aux=True)(get_params(opt_state), inputs=inputs, rng=k2)
-            opt_state = opt_update(i, gen_outputs, opt_state)
+            opt_state = opt_update(i, gen_grads, opt_state)
 
             return opt_state, disc_loss + gen_loss, {**disc_outputs, **gen_outputs}
 

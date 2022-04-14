@@ -13,7 +13,7 @@ tf.config.experimental.set_visible_devices([], 'GPU')
 if __name__ == '__main__':
     job_dir = Path('/tmp/style_gan_test')
     data_dir = Path('/vol/biomedic/users/mm6818/projects/grand_canyon/data')
-    batch_size = 5
+    batch_size = 8
     lr = 0.0025
     scenario = mustache_goatee_scenario(data_dir)
     job_name = Path(f'/tmp/style_gan_test')
