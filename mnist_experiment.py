@@ -185,7 +185,6 @@ if __name__ == '__main__':
         Config(baseline=False, partial_mechanisms=False, constraint_function_power=1, confound=True, de_confound=True),
     ]
 
-
     for config in configs:
         run_experiment(args.job_dir,
                        args.data_dir,

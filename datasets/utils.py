@@ -1,4 +1,5 @@
 import itertools
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, FrozenSet, List, Tuple
@@ -14,6 +15,7 @@ from tqdm import tqdm
 from components import Array, KeyArray
 from components import Shape
 
+warnings.filterwarnings('always')
 IMAGE = NDArray[np.uint8]
 ConfoundingFn = Callable[[IMAGE, int], Tuple[IMAGE, int]]
 
@@ -102,10 +104,11 @@ def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, NDArray],
     index_map = index_map.reshape((*parent_dims.values(), -1))
     counts = np.sum(index_map, axis=-1)
     if np.any(counts == 0):
-        raise ValueError('Distribution does not have full support.')
+        message = '\n'.join([', '.join([f'{parent} == {val[i]}' for i, parent in enumerate(parents)])
+                             for val in np.argwhere(counts == 0)])
+        warnings.warn(f'Distribution does not have full support in:\n{message}')
     joint_dist = counts / np.sum(counts)
     datasets, marginals = {}, {}
-
     for parent_set in powerset(parents.keys()):
         axes = tuple(np.flatnonzero(np.array([parent in parent_set for parent in parents])))
         marginal_dist = np.ones(shape=(1,) * len(parents))
@@ -115,8 +118,9 @@ def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, NDArray],
 
         dist = marginal_dist * np.sum(joint_dist, axis=axes, keepdims=True)
         weights = dist / counts
-        num_repeats = tf.convert_to_tensor(np.round(weights / np.min(weights)).astype(int))
-        unconfounded_dataset = dataset.flat_map(get_resample_fn(num_repeats, parent_dims))
+        num_repeats = np.round(weights / np.min(weights[counts > 0])).astype(int)
+        num_repeats[counts == 0] = 0
+        unconfounded_dataset = dataset.flat_map(get_resample_fn(tf.convert_to_tensor(num_repeats), parent_dims))
         unconfounded_dataset = unconfounded_dataset.shuffle(buffer_size=np.sum(counts * num_repeats),
                                                             reshuffle_each_iteration=True)
         datasets[frozenset(parent_set)] = unconfounded_dataset
