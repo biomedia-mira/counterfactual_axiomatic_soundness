@@ -17,4 +17,6 @@ ApplyFn = Callable
 StaxLayer = Tuple[InitFn, ApplyFn]
 # StaxLayerConstructor = Callable[..., StaxLayer]
 UpdateFn = Callable[[Params, GradientTransformation, OptState, Any, KeyArray], Tuple[Params, OptState, Array, Any]]
+#InitOptimizerFn = Callable[[Opt]]
+
 Model = Tuple[InitFn, ApplyFn, UpdateFn]

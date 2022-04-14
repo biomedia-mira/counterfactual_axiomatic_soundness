@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import cast, List
 
 import tensorflow as tf
-from jax.example_libraries import optimizers
 from jax.example_libraries.stax import Conv, Dense, FanInConcat, FanOut, Flatten, LeakyRelu, parallel, serial, Tanh
+from optax import adam, piecewise_constant_schedule
 
 from core.staxplus import BroadcastTogether, Pass, PixelNorm2D, ResBlock, Reshape, Resize, StaxLayer
 from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario, \
@@ -31,7 +31,7 @@ classifier_layers = \
      cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu)
 
 classifier_train_config = TrainConfig(batch_size=1024,
-                                      optimizer=optimizers.adam(step_size=5e-4, b1=0.9),
+                                      optimizer=adam(learning_rate=5e-4, b1=0.9),
                                       num_steps=2000,
                                       log_every=100,
                                       eval_every=50,
@@ -58,7 +58,7 @@ vae_encoder = serial(parallel(serial(*encoder_layers), Pass), FanInConcat(axis=-
                      FanOut(2), parallel(Dense(latent_dim), Dense(latent_dim)))
 vae_decoder = serial(FanInConcat(axis=-1), *decoder_layers)
 baseline_train_config = TrainConfig(batch_size=512,
-                                    optimizer=optimizers.adam(step_size=1e-3),
+                                    optimizer=adam(learning_rate=1e-3),
                                     num_steps=10000,
                                     log_every=10,
                                     eval_every=250,
@@ -72,9 +72,8 @@ critic = serial(BroadcastTogether(-1), FanInConcat(-1),
                 cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
 mechanism = serial(parallel(serial(*encoder_layers), Pass, Pass), FanInConcat(-1),
                    Dense(hidden_dim), LeakyRelu, *decoder_layers, Tanh)
-
-schedule = optimizers.piecewise_constant(boundaries=[3000, 6000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
-mechanism_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
+schedule = piecewise_constant_schedule(1e-4, {3000: 1e-4 / 2, 6000: 1e-4 / 8})
+mechanism_optimizer = adam(learning_rate=schedule, b1=0.0, b2=.9)
 mechanism_train_config = TrainConfig(batch_size=512,
                                      optimizer=mechanism_optimizer,
                                      num_steps=10000,

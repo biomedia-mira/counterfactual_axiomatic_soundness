@@ -64,8 +64,7 @@ def train(model: Model,
 
     init_fn, apply_fn, update = model
     if use_jit:
-        init_fn = jax.jit(init_fn)
-        update = jax.jit(update)
+        update = jax.jit(update, static_argnames='optimizer')
         apply_fn = jax.jit(apply_fn)
     rng = jax.random.PRNGKey(seed)
     _, params = init_fn(rng, input_shape)
