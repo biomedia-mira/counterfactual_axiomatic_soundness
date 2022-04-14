@@ -1,17 +1,100 @@
 import argparse
 from pathlib import Path
+from typing import Any, Dict, Tuple
 from typing import cast, List
 
+import jax
+import jax.numpy as jnp
+import jax.random as random
 import tensorflow as tf
+from flaxmodels.stylegan2.discriminator import Discriminator as style_gan_discriminator
+from flaxmodels.stylegan2.generator import Generator as style_gan_generator
+from jax import jit, value_and_grad
 from jax.example_libraries import optimizers
+from jax.example_libraries.optimizers import adam
+from jax.example_libraries.optimizers import Optimizer, OptimizerState, ParamsFn
 from jax.example_libraries.stax import Conv, Dense, FanInConcat, FanOut, Flatten, LeakyRelu, parallel, serial, Tanh
+from jax.lax import stop_gradient
 
-from components.stax_extension import BroadcastTogether, Pass, ResBlock, Reshape, Resize, StaxLayer
+from components import Array, KeyArray, Model, Params, Shape, StaxLayer, UpdateFn
+from components.stax_extension import BroadcastTogether, Pass, ResBlock, Reshape, Resize
 from datasets.celeba_mask_hq import mustache_goatee_scenario
-from experiment import get_baseline, get_classifiers, get_mechanisms, TrainConfig
+from experiment import get_baseline, get_classifiers, get_mechanisms
+from experiment import prep_mechanism_data, TrainConfig
 from identifiability_tests import evaluate, print_test_results
+from models.utils import MechanismFn
 
 tf.config.experimental.set_visible_devices([], 'GPU')
+
+
+def style_gan_model(z_dim: int = 512) -> Model:
+    generator = style_gan_generator(resolution=128,
+                                    z_dim=z_dim,
+                                    c_dim=0,
+                                    w_dim=512)
+
+    discriminator = style_gan_discriminator(resolution=128, c_dim=0, mbstd_group_size=8)
+
+    def init_fn(rng: KeyArray, input_shape: Shape) -> Tuple[Shape, Any]:
+        k1, k2 = random.split(rng, 2)
+        generator_vars = generator.init(k1, jnp.zeros((1, z_dim)))
+        discriminator_vars = discriminator.init(k2, jnp.zeros((1, *input_shape[1:])))
+        return (), (generator_vars, discriminator_vars)
+
+    def apply_fn(vars: Any, inputs: Any, rng: KeyArray) -> Tuple[Array, Dict[str, Array]]:
+        generator_vars, discriminator_vars = vars
+        k1, k2 = random.split(rng, 2)
+        image, parents = inputs[frozenset()]
+        z = random.normal(k1, shape=(image.shape[0], z_dim))
+        fake_image = generator.apply(generator_vars, z, rng=k2)
+        return z, {'image': image, 'fake_image': fake_image}
+
+    def step_generator(vars: Any, inputs: Any, rng: KeyArray):
+        def loss_fn(gen_params):
+            image, parents = inputs[frozenset()]
+            generator_vars, discriminator_vars = vars
+            z = random.normal(rng, (image.shape[0], z_dim))
+            _generator_vars = {**generator_vars, 'params': gen_params}
+            fake_image, moving_stats = generator.apply(_generator_vars, z, rng=rng, mutable='moving_stats')
+            fake_logits = discriminator.apply(stop_gradient(discriminator_vars), fake_image)
+            loss = jnp.mean(jax.nn.softplus(-fake_logits))
+            return loss, moving_stats, {'fake_image': fake_image, 'gen_loss': loss[jnp.newaxis]}
+
+        (loss, moving_stats, output), grads = jax.value_and_grad(loss_fn, has_aux=True)(vars[0].params)
+        return (loss, moving_stats, output), grads
+
+    def step_discriminator(params: Params, inputs: Any, rng: KeyArray):
+        image, parents = inputs[frozenset()]
+        generator_params, discriminator_params = params
+        z = random.normal(rng, (image.shape[0], z_dim))
+        fake_image = generator_apply_fn(generator_params, z, rng=rng)
+        fake_logits = discriminator_apply_fn(stop_gradient(discriminator_params), fake_image)
+        real_logits = discriminator_apply_fn(discriminator_params, inputs)
+        loss_fake = jax.nn.softplus(fake_logits)
+        loss_real = jax.nn.softplus(-real_logits)
+        loss = jnp.mean(loss_fake + loss_real)
+        return loss, {'loss_real': loss_real, 'loss_fake': loss_fake, 'loss': loss[jnp.newaxis]}
+
+    def init_optimizer_fn(vars: Any, optimizer: Optimizer) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
+        opt_init, opt_update, get_params = optimizer
+        opt_state = opt_init((vars[0].params, vars[1].params))
+
+        @jit
+        def update(i: int, opt_state: OptimizerState, inputs: Any, rng: KeyArray) -> Tuple[OptimizerState, Array, Any]:
+            k1, k2 = random.split(rng, 2)
+            (disc_loss, disc_outputs), disc_grads \
+                = value_and_grad(step_discriminator, has_aux=True)(get_params(opt_state), inputs=inputs, rng=k1)
+            opt_state = opt_update(i, disc_grads, opt_state)
+            (gen_loss, gen_outputs, gen_moving_stats), gen_grads \
+                = value_and_grad(step_generator, has_aux=True)(get_params(opt_state), inputs=inputs, rng=k2)
+            opt_state = opt_update(i, gen_grads, opt_state)
+
+            return opt_state, disc_loss + gen_loss, {**disc_outputs, **gen_outputs}
+
+        return opt_state, update, get_params
+
+    return init_fn, apply_fn, init_optimizer_fn
+
 
 hidden_dim = 256
 n_channels = hidden_dim // 4
@@ -30,7 +113,7 @@ classifier_train_config = TrainConfig(batch_size=256,
                                       eval_every=100,
                                       save_every=500)
 
-# General encoder/decoder
+# General encoder / decoder
 encoder_layers = \
     (ResBlock(n_channels, filter_shape=(4, 4), strides=(2, 2)),
      ResBlock(n_channels, filter_shape=(4, 4), strides=(2, 2)),
@@ -136,11 +219,33 @@ if __name__ == '__main__':
     parser.add_argument('--seeds', dest='seeds', nargs="+", type=int, help='list of random seeds')
 
     args = parser.parse_args()
+    scenario = mustache_goatee_scenario(args.data_dir)
+    train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
+    parent_names = list(parent_dims.keys())
 
-    run_experiment(args.job_dir,
-                   args.data_dir,
-                   args.overwrite,
-                   args.seeds,
-                   baseline=False,
-                   partial_mechanisms=False)
+    mechanisms: Dict[str, MechanismFn] = {}
+    model = style_gan_model(z_dim=512)
+    train_config = TrainConfig(8, adam(step_size=0.0025, b1=0., b2=.99), 20000, 10, 1000, 1000)
+    train_data, test_data = prep_mechanism_data('all', parent_names, True, train_datasets,
+                                                test_dataset, batch_size=train_config.batch_size)
+
+    # params = train(model=model,
+    #                job_dir=Path('/tmp/test_style_gan'),
+    #                seed=8653453,
+    #                train_data=train_data,
+    #                test_data=test_data,
+    #                input_shape=input_shape,
+    #                optimizer=train_config.optimizer,
+    #                num_steps=train_config.num_steps,
+    #                log_every=train_config.log_every,
+    #                eval_every=train_config.eval_every,
+    #                save_every=train_config.save_every,
+    #                overwrite=True)
+
+    # run_experiment(args.job_dir,
+    #                args.data_dir,
+    #                args.overwrite,
+    #                args.seeds,
+    #                baseline=False,
+    #                partial_mechanisms=False)
     # for partial_mechanisms in (False, True):
