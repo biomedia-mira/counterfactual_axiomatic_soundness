@@ -22,7 +22,7 @@ def classifier(num_classes: int, layers: Sequence[StaxLayer]) -> Model:
     def update(params: Params, optimizer: GradientTransformation, opt_state: OptState, inputs: Any, rng: KeyArray) \
             -> Tuple[Params, OptState, Array, Any]:
         (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(params, inputs)
-        updates, opt_state = optimizer.update(grads, opt_state)
+        updates, opt_state = optimizer.update(updates=grads, state=opt_state, params=params)
         params = optax.apply_updates(params, updates)
         return params, opt_state, loss, outputs
 

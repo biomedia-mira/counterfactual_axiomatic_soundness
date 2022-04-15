@@ -1,213 +1,146 @@
 import argparse
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, cast, Dict, List, Tuple
 
-import jax
 import jax.numpy as jnp
 import jax.random as random
+import numpy as np
 import optax
 import tensorflow as tf
-from flaxmodels.stylegan2.discriminator import Discriminator as style_gan_discriminator
-from flaxmodels.stylegan2.generator import Generator as style_gan_generator
-from jax.lax import stop_gradient
-from optax import adam
+from flaxmodels.stylegan2.discriminator import Discriminator as StyleGanDiscriminator
+from flaxmodels.stylegan2.generator import Generator as StyleGanGenerator
+from jax.example_libraries.stax import Dense, Flatten, LeakyRelu, serial
 
-from core import Array, GradientTransformation, KeyArray, Model, OptState, Params, Shape
+from core import Array, KeyArray, Params, Shape, ShapeTree
+from core.staxplus import ResBlock, StaxLayer
+from core.train import train
 from datasets.celeba_mask_hq import mustache_goatee_scenario
-from experiment import prep_mechanism_data, TrainConfig
+from experiment import get_classifiers, get_mechanisms, prep_mechanism_data, TrainConfig
+from identifiability_tests import evaluate, print_test_results
 from models.utils import MechanismFn
 
 tf.config.experimental.set_visible_devices([], 'GPU')
-from core.train import train
+
+# Classifiers
+hidden_dim = 256
+n_channels = hidden_dim // 4
+classifier_layers = \
+    (ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
+     ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
+     ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(4, 4)),
+     cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu)
+
+classifier_train_config = TrainConfig(batch_size=256,
+                                      optimizer=optax.adam(learning_rate=1e-3, b1=0.9),
+                                      num_steps=5000,
+                                      log_every=100,
+                                      eval_every=100,
+                                      save_every=500)
+
+mechanism_train_config = TrainConfig(batch_size=32,
+                                     optimizer=optax.adam(learning_rate=0.0025, b1=0., b2=.99),
+                                     num_steps=40000,
+                                     log_every=10,
+                                     eval_every=5000,
+                                     save_every=1000)
 
 
-def style_gan_model(z_dim: int = 512) -> Model:
-    generator = style_gan_generator(resolution=128,
-                                    z_dim=z_dim,
-                                    c_dim=0,
-                                    w_dim=512)
+def critic(resolution: int, parent_dims: Dict[str, int]):
+    c_dim = sum(parent_dims.values())
+    discriminator = StyleGanDiscriminator(resolution=resolution, c_dim=c_dim, mbstd_group_size=8)
 
-    discriminator = style_gan_discriminator(resolution=128, c_dim=0, mbstd_group_size=8)
+    def init_fn(rng: KeyArray, input_shape: ShapeTree) -> Tuple[Shape, Params]:
+        dummy_x, dummy_c = jnp.zeros((1, *input_shape[0][1:])), jnp.zeros((1, *input_shape[1][1:]))
+        output, params = discriminator.init_with_output(rng, x=dummy_x, c=dummy_c)
+        return output.shape, params
 
-    def init_fn(rng: KeyArray, input_shape: Shape) -> Tuple[Shape, Any]:
+    def apply_fn(params: Params, inputs: Any) -> Array:
+        return discriminator.apply(params, *inputs)
+
+    return init_fn, apply_fn
+
+
+# ignores moving_stats and noise_const because they are not being used, if they were this code would be wrong
+def mechanism(resolution: int,
+              parent_dims: Dict[str, int],
+              z_dim: int = 512,
+              w_dim: int = 512):
+    c_dim = 2 * sum(parent_dims.values())
+    img_enc_init_fn, img_enc_apply_fn = serial(ResBlock(16, filter_shape=(4, 4), strides=(2, 2)),
+                                               ResBlock(32, filter_shape=(4, 4), strides=(2, 2)),
+                                               ResBlock(64, filter_shape=(4, 4), strides=(2, 2)),
+                                               ResBlock(128, filter_shape=(4, 4), strides=(2, 2)),
+                                               cast(StaxLayer, Flatten), Dense(z_dim), LeakyRelu)
+
+    generator = StyleGanGenerator(resolution=resolution, z_dim=z_dim, c_dim=c_dim,
+                                  w_dim=w_dim, num_ws=int(np.log2(resolution)) * 2 - 3)
+
+    def init_fn(rng: KeyArray, input_shape: ShapeTree) -> Tuple[Shape, Params]:
+        assert input_shape[1] == input_shape[2] and len(input_shape[1]) == 2 and input_shape[1][-1] == c_dim // 2
         k1, k2 = random.split(rng, 2)
-        generator_vars = generator.init(k1, jnp.zeros((1, z_dim)))
-        discriminator_vars = discriminator.init(k2, jnp.zeros((1, *input_shape[1:])))
-        return (), (generator_vars, discriminator_vars)
+        _, enc_params = img_enc_init_fn(k1, input_shape)
 
-    def apply_fn(vars: Any, inputs: Any, rng: KeyArray) -> Tuple[Array, Dict[str, Array]]:
-        generator_vars, discriminator_vars = vars
-        k1, k2 = random.split(rng, 2)
-        image, parents = inputs[frozenset()]
-        z = random.normal(k1, shape=(image.shape[0], z_dim))
-        fake_image = generator.apply(generator_vars, z, rng=k2)
-        return z, {'image': image, 'fake_image': fake_image}
+        dummy_x = jnp.zeros((1, *input_shape[0][1:]))
+        dummy_c = jnp.zeros((1, c_dim))
+        output, gen_params = generator.init_with_output(rng, x=dummy_x, c=dummy_c)
 
-    def step_generator(vars: Any, inputs: Any, rng: KeyArray):
-        def loss_fn(gen_params):
-            image, parents = inputs[frozenset()]
-            generator_vars, discriminator_vars = vars
-            z = random.normal(rng, (image.shape[0], z_dim))
-            _generator_vars = {**generator_vars, 'params': gen_params}
-            fake_image, moving_stats = generator.apply(_generator_vars, z, rng=rng, mutable='moving_stats')
-            fake_logits = discriminator.apply(stop_gradient(discriminator_vars), fake_image)
-            loss = jnp.mean(jax.nn.softplus(-fake_logits))
-            return loss, ({'fake_image': fake_image, 'gen_loss': loss[jnp.newaxis]}, moving_stats)
-        (loss, (output, moving_stats)), grads = jax.value_and_grad(loss_fn, has_aux=True)(vars[0]['params'])
-        return loss, output, moving_stats, grads
+        return output.shape, (enc_params, gen_params)
 
-    # def step_discriminator(params: Params, inputs: Any, rng: KeyArray):
-    #     image, parents = inputs[frozenset()]
-    #     generator_params, discriminator_params = params
-    #     z = random.normal(rng, (image.shape[0], z_dim))
-    #     fake_image = generator_apply_fn(generator_params, z, rng=rng)
-    #     fake_logits = discriminator_apply_fn(stop_gradient(discriminator_params), fake_image)
-    #     real_logits = discriminator_apply_fn(discriminator_params, inputs)
-    #     loss_fake = jax.nn.softplus(fake_logits)
-    #     loss_real = jax.nn.softplus(-real_logits)
-    #     loss = jnp.mean(loss_fake + loss_real)
-    #     return loss, {'loss_real': loss_real, 'loss_fake': loss_fake, 'loss': loss[jnp.newaxis]}
-    #
-    # def init_optimizer_fn(vars: Any, optimizer: Optimizer) -> Tuple[OptimizerState, UpdateFn, ParamsFn]:
-    #     opt_init, opt_update, get_params = optimizer
-    #     opt_state = opt_init((vars[0].params, vars[1].params))
-    #
+    def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Array:
+        image, parents, do_parents = inputs
+        z = img_enc_apply_fn(params[0], image)
+        c = jnp.concatenate((parents, do_parents), axis=-1)
+        fake_image, _ = generator.apply(params, z=z, c=c, rng=rng, mutable='moving_stats')
+        return fake_image
 
-    def update(vars: Any, optimizer: GradientTransformation, opt_state: OptState, inputs: Any, rng: KeyArray) \
-            -> Tuple[Params, OptState, Array, Any]:
-        k1, k2 = random.split(rng, 2)
-
-        gen_loss, gen_output, moving_stats, grads = step_generator(vars, inputs, k1)
-        updates, opt_state['params'] = optimizer.update(grads, opt_state['params'])
-        vars['params'] = optax.apply_updates(vars['params'], updates)
-        vars['moving_stats'] = moving_stats
-
-        # (disc_loss, disc_outputs), disc_grads \
-        #     = value_and_grad(step_discriminator, has_aux=True)(get_params(opt_state), inputs=inputs, rng=k1)
-        # opt_state = opt_update(i, disc_grads, opt_state)
-        # # step_discriminator
-        #
-        # opt_state = opt_update(i, gen_grads, opt_state)
-        # return params, opt_state, loss, outputs
-
-        return vars, opt_state, gen_loss, gen_output
-
-    return init_fn, apply_fn, update
+    return init_fn, apply_fn
 
 
-# hidden_dim = 256
-# n_channels = hidden_dim // 4
-#
-# # Classifiers
-# classifier_layers = \
-#     (ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
-#      ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
-#      ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(4, 4)),
-#      cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu)
-#
-# classifier_train_config = TrainConfig(batch_size=256,
-#                                       optimizer=optimizers.adam(step_size=1e-3, b1=0.9),
-#                                       num_steps=5000,
-#                                       log_every=100,
-#                                       eval_every=100,
-#                                       save_every=500)
-#
-# # General encoder / decoder
-# encoder_layers = \
-#     (ResBlock(n_channels, filter_shape=(4, 4), strides=(2, 2)),
-#      ResBlock(n_channels, filter_shape=(4, 4), strides=(2, 2)),
-#      ResBlock(n_channels, filter_shape=(4, 4), strides=(2, 2)),
-#      ResBlock(n_channels, filter_shape=(4, 4), strides=(2, 2)),
-#      cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
-#
-# decoder_layers = \
-#     (Dense(hidden_dim), LeakyRelu, Dense(8 * 8 * n_channels), LeakyRelu, Reshape((-1, 8, 8, n_channels)),
-#      Resize((-1, 16, 16, n_channels)), ResBlock(n_channels, filter_shape=(4, 4), strides=(1, 1)),
-#      Resize((-1, 32, 32, n_channels)), ResBlock(n_channels, filter_shape=(4, 4), strides=(1, 1)),
-#      Resize((-1, 64, 64, n_channels)), ResBlock(n_channels, filter_shape=(4, 4), strides=(1, 1)),
-#      Resize((-1, 128, 128, n_channels)), ResBlock(n_channels, filter_shape=(4, 4), strides=(1, 1)),
-#      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'))
-#
-# # Conditional VAE baseline
-# latent_dim = 16
-# vae_encoder = serial(parallel(serial(*encoder_layers), Pass), FanInConcat(axis=-1),
-#                      Dense(hidden_dim), LeakyRelu,
-#                      FanOut(2), parallel(Dense(latent_dim), Dense(latent_dim)))
-# vae_decoder = serial(FanInConcat(axis=-1), *decoder_layers)
-# baseline_train_config = TrainConfig(batch_size=512,
-#                                     optimizer=optimizers.adam(step_size=1e-3),
-#                                     num_steps=10000,
-#                                     log_every=10,
-#                                     eval_every=250,
-#                                     save_every=250)
-#
-# # Functional mechanism
-# critic = serial(BroadcastTogether(-1), FanInConcat(-1), *encoder_layers, Dense(hidden_dim), LeakyRelu)
-#
-# mechanism = serial(parallel(serial(*encoder_layers), Pass, Pass), FanInConcat(-1),
-#                    Dense(hidden_dim), LeakyRelu, *decoder_layers, Tanh)
-#
-# schedule = optimizers.piecewise_constant(boundaries=[5000, 10000], values=[1e-4, 1e-4 / 2, 1e-4 / 8])
-# mechanism_optimizer = optimizers.adam(step_size=schedule, b1=0.0, b2=.9)
-# mechanism_train_config = TrainConfig(batch_size=64,
-#                                      optimizer=mechanism_optimizer,
-#                                      num_steps=20000,
-#                                      log_every=10,
-#                                      eval_every=250,
-#                                      save_every=250)
+def run_experiment(job_dir: Path,
+                   data_dir: Path,
+                   overwrite: bool,
+                   seeds: List[int],
+                   baseline: bool,
+                   partial_mechanisms: bool,
+                   from_joint: bool = True) -> None:
+    scenario = mustache_goatee_scenario(data_dir)
+    job_name = Path(f'partial_mechanisms_{partial_mechanisms}')
+    scenario_name = 'mustache_goatee_scenario'
+    pseudo_oracle_dir = job_dir / scenario_name / 'pseudo_oracles'
+    experiment_dir = job_dir / scenario_name / job_name
+    pseudo_oracles = get_classifiers(job_dir=pseudo_oracle_dir,
+                                     seed=368392,
+                                     scenario=scenario,
+                                     classifier_layers=classifier_layers,
+                                     train_config=classifier_train_config,
+                                     overwrite=False)
+
+    train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
+    resolution = input_shape[1]
+    results = []
+    for seed in seeds:
+        seed_dir = experiment_dir / f'seed_{seed:d}'
+
+        mechanisms = get_mechanisms(job_dir=seed_dir,
+                                    seed=seed,
+                                    scenario=scenario,
+                                    partial_mechanisms=partial_mechanisms,
+                                    constraint_function_power=1,
+                                    classifier_layers=classifier_layers,
+                                    classifier_train_config=classifier_train_config,
+                                    critic=critic(resolution, parent_dims),
+                                    mechanism=mechanism(resolution, parent_dims),
+                                    train_config=mechanism_train_config,
+                                    from_joint=from_joint,
+                                    overwrite=overwrite)
+
+        results.append(evaluate(seed_dir, mechanisms, is_invertible, marginals, pseudo_oracles, test_dataset,
+                                overwrite=overwrite))
+
+    print(job_name)
+    print_test_results(results)
 
 
-# def run_experiment(job_dir: Path,
-#                    data_dir: Path,
-#                    overwrite: bool,
-#                    seeds: List[int],
-#                    baseline: bool,
-#                    partial_mechanisms: bool,
-#                    from_joint: bool = True) -> None:
-#     scenario = mustache_goatee_scenario(data_dir)
-#     job_name = Path(f'partial_mechanisms_{partial_mechanisms}')
-#     scenario_name = 'mustache_goatee_scenario'
-#     pseudo_oracle_dir = job_dir / scenario_name / 'pseudo_oracles'
-#     experiment_dir = job_dir / scenario_name / job_name
-#     pseudo_oracles = get_classifiers(job_dir=pseudo_oracle_dir,
-#                                      seed=368392,
-#                                      scenario=scenario,
-#                                      classifier_layers=classifier_layers,
-#                                      train_config=classifier_train_config,
-#                                      overwrite=False)
-#
-#     train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
-#     results = []
-#     for seed in seeds:
-#         seed_dir = experiment_dir / f'seed_{seed:d}'
-#         if baseline:
-#             mechanisms = get_baseline(job_dir=seed_dir,
-#                                       seed=seed,
-#                                       scenario=scenario,
-#                                       vae_encoder=vae_encoder,
-#                                       vae_decoder=vae_decoder,
-#                                       train_config=baseline_train_config,
-#                                       from_joint=from_joint,
-#                                       overwrite=overwrite)
-#         else:
-#             mechanisms = get_mechanisms(job_dir=seed_dir,
-#                                         seed=seed,
-#                                         scenario=scenario,
-#                                         partial_mechanisms=partial_mechanisms,
-#                                         constraint_function_power=1,
-#                                         classifier_layers=classifier_layers,
-#                                         classifier_train_config=classifier_train_config,
-#                                         critic=critic,
-#                                         mechanism=mechanism,
-#                                         train_config=mechanism_train_config,
-#                                         from_joint=from_joint,
-#                                         overwrite=overwrite)
-#
-#         results.append(evaluate(seed_dir, mechanisms, is_invertible, marginals, pseudo_oracles, test_dataset,
-#                                 overwrite=overwrite))
-#
-#     print(job_name)
-#     print_test_results(results)
 #
 
 if __name__ == '__main__':
@@ -223,8 +156,8 @@ if __name__ == '__main__':
     parent_names = list(parent_dims.keys())
 
     mechanisms: Dict[str, MechanismFn] = {}
-    model = style_gan_model(z_dim=512)
-    train_config = TrainConfig(8, adam(learning_rate=0.0025, b1=0., b2=.99), 20000, 10, 1000, 1000)
+    model = style_gan_model(resolution=128)
+    train_config = TrainConfig(32, optax.adam(learning_rate=0.0025, b1=0., b2=.99), 20000, 10, 1000, 1000)
     train_data, test_data = prep_mechanism_data('all', parent_names, True, train_datasets,
                                                 test_dataset, batch_size=train_config.batch_size)
 
@@ -239,7 +172,8 @@ if __name__ == '__main__':
                    log_every=train_config.log_every,
                    eval_every=train_config.eval_every,
                    save_every=train_config.save_every,
-                   overwrite=True, use_jit=False)
+                   overwrite=True,
+                   use_jit=True)
 
     # run_experiment(args.job_dir,
     #                args.data_dir,

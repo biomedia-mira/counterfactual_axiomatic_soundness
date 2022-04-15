@@ -95,7 +95,9 @@ def get_resample_fn(num_repeats: tf.Tensor, parent_dims: Dict[str, int]) \
     return resample_fn
 
 
-def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, NDArray], parent_dims: Dict[str, int]) \
+def get_simulated_intervention_datasets(dataset: tf.data.Dataset,
+                                        parents: Dict[str, NDArray],
+                                        parent_dims: Dict[str, int]) \
         -> Tuple[Dict[FrozenSet, tf.data.Dataset], Dict[str, MarginalDistribution]]:
     indicator = {key: [parents[key] == i for i in range(dim)] for key, dim in parent_dims.items()}
     index_map = np.array([np.logical_and.reduce(a) for a in itertools.product(*indicator.values())])
@@ -109,13 +111,9 @@ def get_marginal_datasets(dataset: tf.data.Dataset, parents: Dict[str, NDArray],
     datasets, marginals = {}, {}
     for parent_set in powerset(parents.keys()):
         axes = tuple(np.flatnonzero(np.array([parent in parent_set for parent in parents])))
-        marginal_dist = np.ones(shape=(1,) * len(parents))
-        for axis in axes:
-            marginal_dist = marginal_dist * \
-                            np.sum(joint_dist, axis=tuple(set(range(counts.ndim)) - {axis}), keepdims=True)
-
-        dist = marginal_dist * np.sum(joint_dist, axis=axes, keepdims=True)
-        weights = dist / counts
+        marginal_dist = np.sum(joint_dist, axis=tuple(set(range(joint_dist.ndim)) - set(axes)), keepdims=True)
+        interventional_dist = marginal_dist * np.sum(joint_dist, axis=axes, keepdims=True)
+        weights = interventional_dist / counts
         num_repeats = np.round(weights / np.min(weights[counts > 0])).astype(int)
         num_repeats[counts == 0] = 0
         unconfounded_dataset = dataset.flat_map(get_resample_fn(tf.convert_to_tensor(num_repeats), parent_dims))

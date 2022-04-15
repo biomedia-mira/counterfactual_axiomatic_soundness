@@ -13,7 +13,7 @@ from PIL import Image
 from scipy.stats.contingency import crosstab
 from tqdm import tqdm
 
-from datasets.utils import get_marginal_datasets
+from datasets.utils import get_simulated_intervention_datasets
 from datasets.utils import Scenario
 
 
@@ -148,6 +148,6 @@ def mustache_goatee_scenario(data_dir: Path, raw_data_dir: Optional[Path] = None
     encode_fn = get_encode_fn(parent_dims)
     train_data = train_data.map(encode_fn)
     test_dataset = test_dataset.map(encode_fn)
-    train_datasets, marginals = get_marginal_datasets(train_data, train_parents, parent_dims)
+    train_datasets, marginals = get_simulated_intervention_datasets(train_data, train_parents, parent_dims)
     input_shape = (-1, *test_dataset.element_spec[0].shape)
     return train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape

@@ -105,15 +105,16 @@ def functional_counterfactual(do_parent_name: str,
 
     def update(params: Params, optimizer: GradientTransformation, opt_state: OptState, inputs: Any, rng: KeyArray) \
             -> Tuple[Params, OptState, Array, Any]:
-        # step generator
-        (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(params, inputs, rng)
-        zero_grads = tree_map(lambda x: x * 0, grads)
-        updates, opt_state = optimizer.update((zero_grads[0], grads[1]), opt_state)
-        params = optax.apply_updates(params, updates)
+        zero_grads = tree_map(lambda x: jnp.zeros_like(x), params)
         # step discriminator
         (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(params, inputs, rng)
-        updates, opt_state = optimizer.update((grads[0], zero_grads[1]), opt_state)
+        updates, opt_state = optimizer.update(updates=(grads[0], zero_grads[1]), state=opt_state, params=params)
         params = optax.apply_updates(params, updates)
+        # step generator
+        (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(params, inputs, rng)
+        updates, opt_state = optimizer.update(updates=(zero_grads[0], grads[1]), state=opt_state, params=params)
+        params = optax.apply_updates(params, updates)
+
         return params, opt_state, loss, outputs
 
     def get_mechanism_fn(params: Params) -> MechanismFn:
