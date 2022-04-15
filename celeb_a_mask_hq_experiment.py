@@ -13,11 +13,9 @@ from jax.example_libraries.stax import Dense, Flatten, LeakyRelu, serial
 
 from core import Array, KeyArray, Params, Shape, ShapeTree
 from core.staxplus import ResBlock, StaxLayer
-from core.train import train
 from datasets.celeba_mask_hq import mustache_goatee_scenario
-from experiment import get_classifiers, get_mechanisms, prep_mechanism_data, TrainConfig
+from experiment import get_classifiers, get_mechanisms, TrainConfig
 from identifiability_tests import evaluate, print_test_results
-from models.utils import MechanismFn
 
 tf.config.experimental.set_visible_devices([], 'GPU')
 
@@ -86,11 +84,12 @@ def mechanism(resolution: int,
 
         return output.shape, (enc_params, gen_params)
 
-    def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Array:
+    def apply_fn(params: Params, inputs: Any) -> Array:
         image, parents, do_parents = inputs
         z = img_enc_apply_fn(params[0], image)
         c = jnp.concatenate((parents, do_parents), axis=-1)
-        fake_image, _ = generator.apply(params, z=z, c=c, rng=rng, mutable='moving_stats')
+        #TODO: add rng to generator
+        fake_image, _ = generator.apply(params, z=z, c=c, mutable='moving_stats')
         return fake_image
 
     return init_fn, apply_fn
@@ -100,7 +99,6 @@ def run_experiment(job_dir: Path,
                    data_dir: Path,
                    overwrite: bool,
                    seeds: List[int],
-                   baseline: bool,
                    partial_mechanisms: bool,
                    from_joint: bool = True) -> None:
     scenario = mustache_goatee_scenario(data_dir)
@@ -141,44 +139,17 @@ def run_experiment(job_dir: Path,
     print_test_results(results)
 
 
-#
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--job-dir', dest='job_dir', type=Path, help='job-dir where logs and models are saved')
     parser.add_argument('--data-dir', dest='data_dir', type=Path, help='data-dir where files will be saved')
+    parser.add_argument('--scenario-name', dest='scenario_name', type=str, help='Name of scenario to run.')
     parser.add_argument('--overwrite', action='store_true', help='whether to overwrite an existing run')
     parser.add_argument('--seeds', dest='seeds', nargs="+", type=int, help='list of random seeds')
-
     args = parser.parse_args()
-    scenario = mustache_goatee_scenario(args.data_dir)
-    train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
-    parent_names = list(parent_dims.keys())
 
-    mechanisms: Dict[str, MechanismFn] = {}
-    model = style_gan_model(resolution=128)
-    train_config = TrainConfig(32, optax.adam(learning_rate=0.0025, b1=0., b2=.99), 20000, 10, 1000, 1000)
-    train_data, test_data = prep_mechanism_data('all', parent_names, True, train_datasets,
-                                                test_dataset, batch_size=train_config.batch_size)
-
-    params = train(model=model,
-                   job_dir=Path('/tmp/test_style_gan'),
-                   seed=8653453,
-                   train_data=train_data,
-                   test_data=test_data,
-                   input_shape=input_shape,
-                   optimizer=train_config.optimizer,
-                   num_steps=train_config.num_steps,
-                   log_every=train_config.log_every,
-                   eval_every=train_config.eval_every,
-                   save_every=train_config.save_every,
-                   overwrite=True,
-                   use_jit=True)
-
-    # run_experiment(args.job_dir,
-    #                args.data_dir,
-    #                args.overwrite,
-    #                args.seeds,
-    #                baseline=False,
-    #                partial_mechanisms=False)
-    # for partial_mechanisms in (False, True):
+    run_experiment(args.job_dir,
+                   args.data_dir,
+                   args.overwrite,
+                   args.seeds,
+                   partial_mechanisms=False)
