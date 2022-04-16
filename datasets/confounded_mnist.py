@@ -157,8 +157,9 @@ def create_confounded_mnist_dataset(data_dir: Path,
     train_data_dict = train_data_dict if de_confound else dict.fromkeys(train_data_dict.keys(), train_data)
 
     def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
-        return layers.RandomCrop(28, 28)(
-            tf.pad(image, ((2, 2), (2, 2), (0, 0)), mode='constant', constant_values=-1.)), parents
+        img = layers.RandomCrop(28, 28)(tf.pad(image, ((2, 2), (2, 2), (0, 0)), mode='constant', constant_values=-1.))
+        img = layers.RandomFlip(mode='horizontal')(img)
+        return img, parents
 
     train_data_dict = jax.tree_map(lambda ds: ds.map(augment), train_data_dict)
 

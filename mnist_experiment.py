@@ -1,17 +1,17 @@
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast, List
+from typing import List, cast
 
 import optax
 import tensorflow as tf
-from jax.example_libraries.stax import Conv, Dense, FanInConcat, FanOut, Flatten, LeakyRelu, parallel, serial, Tanh
+from jax.example_libraries.stax import Conv, Dense, FanInConcat, FanOut, Flatten, LeakyRelu, Tanh, parallel, serial
 
-from core.staxplus import BroadcastTogether, Pass, PixelNorm2D, ResBlock, Reshape, Resize, StaxLayer
+from core.staxplus import BroadcastTogether, Pass, ResBlock, Reshape, Resize, StaxLayer
 from datasets.confounded_mnist import digit_colour_scenario, digit_fracture_colour_scenario, \
     digit_thickness_colour_scenario
 from datasets.mnist_ood import get_coloured_kmnist
-from experiment import get_baseline, get_classifiers, get_mechanisms, TrainConfig
+from experiment import TrainConfig, get_baseline, get_classifiers, get_mechanisms
 from identifiability_tests import evaluate, print_test_results
 
 tf.config.experimental.set_visible_devices([], 'GPU')
@@ -39,16 +39,14 @@ classifier_train_config = TrainConfig(batch_size=1024,
 
 # General encoder/decoder
 encoder_layers = \
-    (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
-     Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), PixelNorm2D, LeakyRelu,
+    (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+     Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
      cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
 
 decoder_layers = \
     (Dense(hidden_dim), LeakyRelu, Dense(7 * 7 * n_channels), LeakyRelu, Reshape((-1, 7, 7, n_channels)),
-     Resize((-1, 14, 14, n_channels)), Conv(n_channels, filter_shape=(4, 4), strides=(1, 1), padding='SAME'),
-     PixelNorm2D, LeakyRelu,
-     Resize((-1, 28, 28, n_channels)), Conv(n_channels, filter_shape=(4, 4), strides=(1, 1), padding='SAME'),
-     PixelNorm2D, LeakyRelu,
+     Resize((-1, 14, 14, n_channels)), Conv(n_channels, filter_shape=(4, 4), strides=(1, 1), padding='SAME'), LeakyRelu,
+     Resize((-1, 28, 28, n_channels)), Conv(n_channels, filter_shape=(4, 4), strides=(1, 1), padding='SAME'), LeakyRelu,
      Conv(3, filter_shape=(3, 3), strides=(1, 1), padding='SAME'))
 
 # Conditional VAE baseline
@@ -64,12 +62,18 @@ baseline_train_config = TrainConfig(batch_size=512,
                                     eval_every=250,
                                     save_every=250)
 
+critic = serial(parallel(
+    serial(Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+           Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+           Flatten, Dense(hidden_dim), LeakyRelu),
+    Dense(hidden_dim), LeakyRelu),
+    FanInConcat(-1), Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu)
 # Functional mechanism
-critic = serial(BroadcastTogether(-1), FanInConcat(-1),
-                ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
-                ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
-                ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
-                cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
+# critic = serial(BroadcastTogether(-1), FanInConcat(-1),
+#                 ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
+#                 ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
+#                 ResBlock(hidden_dim // 2, filter_shape=(4, 4), strides=(2, 2)),
+#                 cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
 
 # critic = serial(BroadcastTogether(-1), FanInConcat(-1),
 #                 Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
@@ -80,7 +84,7 @@ critic = serial(BroadcastTogether(-1), FanInConcat(-1),
 mechanism = serial(parallel(serial(*encoder_layers), Pass, Pass), FanInConcat(-1),
                    Dense(hidden_dim), LeakyRelu, *decoder_layers, Tanh)
 
-mechanism_optimizer = optax.chain(optax.adam(learning_rate=1e-3, b1=0.0, b2=.9),
+mechanism_optimizer = optax.chain(optax.adam(learning_rate=1e-4, b1=0.0, b2=.9),
                                   optax.adaptive_grad_clip(clipping=0.01))
 mechanism_train_config = TrainConfig(batch_size=512,
                                      optimizer=mechanism_optimizer,

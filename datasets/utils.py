@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable, Dict, FrozenSet, List, Tuple
 
 import jax.numpy as jnp
+import numpy as np
 import jax.random as random
 import numpy as np
 import tensorflow as tf
@@ -111,17 +112,21 @@ def get_simulated_intervention_datasets(dataset: tf.data.Dataset,
     datasets, marginals = {}, {}
     for parent_set in powerset(parents.keys()):
         axes = tuple(np.flatnonzero(np.array([parent in parent_set for parent in parents])))
-        marginal_dist = np.sum(joint_dist, axis=tuple(set(range(joint_dist.ndim)) - set(axes)), keepdims=True)
-        interventional_dist = marginal_dist * np.sum(joint_dist, axis=axes, keepdims=True)
+        product_of_marginals = np.ones(shape=(1,) * len(parents))
+        for axis in axes:
+            product_of_marginals = product_of_marginals \
+                                   * np.sum(joint_dist, axis=tuple(set(range(joint_dist.ndim)) - {axis}), keepdims=True)
+        interventional_dist = product_of_marginals * np.sum(joint_dist, axis=axes, keepdims=True)
         weights = interventional_dist / counts
         num_repeats = np.round(weights / np.min(weights[counts > 0])).astype(int)
         num_repeats[counts == 0] = 0
+        print(f'{str(parent_set)}: max_num_repeat={np.max(num_repeats):d}; total_num_repeats:{np.sum(num_repeats):d}')
         unconfounded_dataset = dataset.flat_map(get_resample_fn(tf.convert_to_tensor(num_repeats), parent_dims))
         unconfounded_dataset = unconfounded_dataset.shuffle(buffer_size=np.sum(counts * num_repeats),
                                                             reshuffle_each_iteration=True)
         datasets[frozenset(parent_set)] = unconfounded_dataset
         if len(parent_set) == 1:
-            marginals[parent_set[0]] = MarginalDistribution(np.squeeze(marginal_dist))
+            marginals[parent_set[0]] = MarginalDistribution(np.squeeze(product_of_marginals))
 
     return datasets, marginals
 
