@@ -218,12 +218,12 @@ def digit_fracture_colour_scenario(data_dir: Path, confound: bool, de_confound: 
 
 def digit_thickness_colour_scenario(data_dir: Path, confound: bool, de_confound: bool) -> Scenario:
     assert not (not confound and de_confound)
-    parent_dims = {'digit': 10, 'thickness': 2, 'colour': 10, 'rot90': 2}
-    is_invertible = {'digit': False, 'thickness': True, 'colour': True,  'rot90': True}
+    parent_dims = {'digit': 10, 'thickness': 2, 'colour': 10}
+    is_invertible = {'digit': False, 'thickness': True, 'colour': True}
 
     even_heavy_cm = np.zeros(shape=(10, 2))
-    even_heavy_cm[0:-1:2] = (.1, .9)
-    even_heavy_cm[1::2] = (.9, .1)
+    even_heavy_cm[0:-1:2] = (.05, .95)
+    even_heavy_cm[1::2] = (.95, .05)
 
     # thickness
     test_thickness_cm = get_uniform_confusion_matrix(10, 2)
@@ -234,24 +234,24 @@ def digit_thickness_colour_scenario(data_dir: Path, confound: bool, de_confound:
 
     # colour
     test_colourise_cm = get_uniform_confusion_matrix(10, 10)
-    train_colourise_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if confound else test_colourise_cm
+    train_colourise_cm = get_diagonal_confusion_matrix(10, 10, noise=.05) if confound else test_colourise_cm
     train_colourise_fn = get_colourise_fn(train_colourise_cm)
     test_colourise_fn = get_colourise_fn(test_colourise_cm)
 
     # rot90
-    prime_heavy_cm = np.zeros(shape=(10, 2))
-    for i in [2, 3, 5, 7]:
-        prime_heavy_cm[i] = (.1, .9)
-    for i in [0, 1, 4, 6, 8, 9]:
-        prime_heavy_cm[i] = (.9, .1)
-    test_rot90_cm = get_uniform_confusion_matrix(10, 2)
-    train_rot90_cm = prime_heavy_cm if confound else test_rot90_cm
-    function_dict = {0: lambda x: x, 1: np.rot90}
-    train_rot90_fn = function_dict_to_confounding_fn(function_dict, train_rot90_cm)
-    test_rot90_fn = function_dict_to_confounding_fn(function_dict, test_rot90_cm)
+    # prime_heavy_cm = np.zeros(shape=(10, 2))
+    # for i in [2, 3, 5, 7]:
+    #     prime_heavy_cm[i] = (.1, .9)
+    # for i in [0, 1, 4, 6, 8, 9]:
+    #     prime_heavy_cm[i] = (.9, .1)
+    # test_rot90_cm = get_uniform_confusion_matrix(10, 2)
+    # train_rot90_cm = prime_heavy_cm if confound else test_rot90_cm
+    # function_dict = {0: lambda x: x, 1: np.rot90}
+    # train_rot90_fn = function_dict_to_confounding_fn(function_dict, train_rot90_cm)
+    # test_rot90_fn = function_dict_to_confounding_fn(function_dict, test_rot90_cm)
 
-    train_confounding_fns = [train_thickness_fn, train_colourise_fn, train_rot90_fn]
-    test_confounding_fns = [test_thickness_fn, test_colourise_fn, test_rot90_fn]
+    train_confounding_fns = [train_thickness_fn, train_colourise_fn]
+    test_confounding_fns = [test_thickness_fn, test_colourise_fn]
     dataset_name = 'mnist_digit_thickness_colour' + ('_confounded' if confound else '')
     train_datasets, test_dataset, marginals, input_shape = \
         create_confounded_mnist_dataset(data_dir, dataset_name, train_confounding_fns, test_confounding_fns,
