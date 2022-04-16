@@ -79,7 +79,7 @@ def train(model: Model,
         if jnp.isnan(loss):
             raise ValueError('NaN loss!')
 
-        if step % eval_every == 0 and test_data is not None:
+        if step > 0 and step % eval_every == 0 and test_data is not None:
             cum_output = None
             for test_inputs in test_data:
                 rng, _ = jax.random.split(rng)

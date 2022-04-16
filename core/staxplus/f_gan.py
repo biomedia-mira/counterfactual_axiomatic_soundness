@@ -4,15 +4,17 @@ from typing import Any, Callable, Dict, Tuple
 import jax.numpy as jnp
 from jax.example_libraries.stax import Dense, Flatten, serial
 from jax.lax import stop_gradient
-
+import jax
 from core import Array, Params, StaxLayer
 
 FDivergence = Tuple[Callable[[Array], Array], Callable[[Array], Array]]
 
 
 def gan() -> FDivergence:
+    # def activation(v: Array) -> Array:
+    #     return -jnp.log(1 + jnp.exp(-v))
     def activation(v: Array) -> Array:
-        return -jnp.log(1 + jnp.exp(-v))
+        return -jax.nn.softplus(-v)
 
     def f_conj(t: Array) -> Array:
         return -jnp.log(1 - jnp.exp(t))

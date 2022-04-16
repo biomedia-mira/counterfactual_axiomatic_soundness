@@ -31,7 +31,7 @@ def prep_classifier_data(parent_name: str,
     target_dist = frozenset((parent_name,))
     select_parent = lambda image, parents: (image, parents[parent_name])
     train_data = to_numpy_iterator(train_datasets[target_dist].map(select_parent), batch_size=batch_size)
-    test_data = to_numpy_iterator(test_dataset.map(select_parent), batch_size=batch_size, drop_remainder=False)
+    test_data = to_numpy_iterator(test_dataset.map(select_parent), batch_size=batch_size, drop_remainder=True)
     return train_data, test_data
 
 
@@ -48,7 +48,7 @@ def prep_mechanism_data(do_parent_name: str,
                                                         target_dist: train_datasets[target_dist]}),
                                    batch_size=batch_size)
     test_data = to_numpy_iterator(tf.data.Dataset.zip({source_dist: test_dataset, target_dist: test_dataset}),
-                                  batch_size=batch_size, drop_remainder=False)
+                                  batch_size=batch_size, drop_remainder=True)
     return train_data, test_data
 
 

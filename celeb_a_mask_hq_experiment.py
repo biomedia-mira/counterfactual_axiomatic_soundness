@@ -35,7 +35,7 @@ classifier_train_config = TrainConfig(batch_size=256,
                                       eval_every=100,
                                       save_every=500)
 
-mechanism_train_config = TrainConfig(batch_size=32,
+mechanism_train_config = TrainConfig(batch_size=16,
                                      optimizer=optax.adam(learning_rate=0.0025, b1=0., b2=.99),
                                      num_steps=40000,
                                      log_every=10,
@@ -52,8 +52,8 @@ def critic(resolution: int, parent_dims: Dict[str, int]):
         output, params = discriminator.init_with_output(rng, x=dummy_x, c=dummy_c)
         return output.shape, params
 
-    def apply_fn(params: Params, inputs: Any) -> Array:
-        return discriminator.apply(params, *inputs)
+    def apply_fn(params: Params, inputs: Any, **kwargs) -> Array:
+        return discriminator.apply(params, x=inputs[0], c=inputs[1])
 
     return init_fn, apply_fn
 
@@ -61,7 +61,7 @@ def critic(resolution: int, parent_dims: Dict[str, int]):
 # ignores moving_stats and noise_const because they are not being used, if they were this code would be wrong
 def mechanism(resolution: int,
               parent_dims: Dict[str, int],
-              z_dim: int = 512,
+              z_dim: int = 1024,
               w_dim: int = 512):
     c_dim = 2 * sum(parent_dims.values())
     img_enc_init_fn, img_enc_apply_fn = serial(ResBlock(16, filter_shape=(4, 4), strides=(2, 2)),
@@ -71,16 +71,16 @@ def mechanism(resolution: int,
                                                cast(StaxLayer, Flatten), Dense(z_dim), LeakyRelu)
 
     generator = StyleGanGenerator(resolution=resolution, z_dim=z_dim, c_dim=c_dim,
-                                  w_dim=w_dim, num_ws=int(np.log2(resolution)) * 2 - 3)
+                                  w_dim=w_dim, num_ws=int(np.log2(resolution)) * 2 - 3, num_mapping_layers=2)
 
     def init_fn(rng: KeyArray, input_shape: ShapeTree) -> Tuple[Shape, Params]:
         assert input_shape[1] == input_shape[2] and len(input_shape[1]) == 2 and input_shape[1][-1] == c_dim // 2
         k1, k2 = random.split(rng, 2)
-        _, enc_params = img_enc_init_fn(k1, input_shape)
+        z_shape, enc_params = img_enc_init_fn(k1, input_shape[0])
 
-        dummy_x = jnp.zeros((1, *input_shape[0][1:]))
+        dummy_z = jnp.zeros((1, *z_shape[1:]))
         dummy_c = jnp.zeros((1, c_dim))
-        output, gen_params = generator.init_with_output(rng, x=dummy_x, c=dummy_c)
+        output, gen_params = generator.init_with_output(rng, z=dummy_z, c=dummy_c)
 
         return output.shape, (enc_params, gen_params)
 
@@ -89,7 +89,7 @@ def mechanism(resolution: int,
         z = img_enc_apply_fn(params[0], image)
         c = jnp.concatenate((parents, do_parents), axis=-1)
         #TODO: add rng to generator
-        fake_image, _ = generator.apply(params, z=z, c=c, mutable='moving_stats')
+        fake_image, _ = generator.apply(params[1], z=z, c=c, mutable='moving_stats')
         return fake_image
 
     return init_fn, apply_fn
