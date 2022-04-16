@@ -156,10 +156,14 @@ def create_confounded_mnist_dataset(data_dir: Path,
     train_data_dict, marginals = get_simulated_intervention_datasets(train_data, train_parents, parent_dims)
     train_data_dict = train_data_dict if de_confound else dict.fromkeys(train_data_dict.keys(), train_data)
 
+    # def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
+    #     img = layers.RandomCrop(28, 28)(tf.pad(image, ((2, 2), (2, 2), (0, 0)), mode='constant', constant_values=-1.))
+    #     return img, parents
+
     def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
-        img = layers.RandomCrop(28, 28)(tf.pad(image, ((2, 2), (2, 2), (0, 0)), mode='constant', constant_values=-1.))
-        img = layers.RandomFlip(mode='horizontal')(img)
-        return img, parents
+        image = layers.RandomZoom(height_factor=.2, width_factor=.2, fill_mode='constant', fill_value=-1.)(image)
+        return image, parents
+
 
     train_data_dict = jax.tree_map(lambda ds: ds.map(augment), train_data_dict)
 
@@ -223,8 +227,8 @@ def digit_thickness_colour_scenario(data_dir: Path, confound: bool, de_confound:
     is_invertible = {'digit': False, 'thickness': True, 'colour': True}
 
     even_heavy_cm = np.zeros(shape=(10, 2))
-    even_heavy_cm[0:-1:2] = (.05, .95)
-    even_heavy_cm[1::2] = (.95, .05)
+    even_heavy_cm[0:-1:2] = (.1, .9)
+    even_heavy_cm[1::2] = (.9, .1)
 
     # thickness
     test_thickness_cm = get_uniform_confusion_matrix(10, 2)
@@ -235,7 +239,7 @@ def digit_thickness_colour_scenario(data_dir: Path, confound: bool, de_confound:
 
     # colour
     test_colourise_cm = get_uniform_confusion_matrix(10, 10)
-    train_colourise_cm = get_diagonal_confusion_matrix(10, 10, noise=.05) if confound else test_colourise_cm
+    train_colourise_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if confound else test_colourise_cm
     train_colourise_fn = get_colourise_fn(train_colourise_cm)
     test_colourise_fn = get_colourise_fn(test_colourise_cm)
 
