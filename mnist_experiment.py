@@ -80,7 +80,7 @@ critic = serial(BroadcastTogether(-1), FanInConcat(-1),
 mechanism = serial(parallel(serial(*encoder_layers), Pass, Pass), FanInConcat(-1),
                    Dense(hidden_dim), LeakyRelu, *decoder_layers, Tanh)
 
-mechanism_optimizer = optax.chain(optax.adam(learning_rate=1e-4, b1=0.0, b2=.9),
+mechanism_optimizer = optax.chain(optax.adam(learning_rate=1e-3, b1=0.0, b2=.9),
                                   optax.adaptive_grad_clip(clipping=0.01))
 mechanism_train_config = TrainConfig(batch_size=512,
                                      optimizer=mechanism_optimizer,
