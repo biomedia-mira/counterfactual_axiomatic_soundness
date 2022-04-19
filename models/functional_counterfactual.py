@@ -1,15 +1,13 @@
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import jax.numpy as jnp
-import jax.random as random
 import optax
 from jax import tree_map, value_and_grad, vmap
 
 from core import Array, GradientTransformation, KeyArray, Model, OptState, Params, Shape, StaxLayer
 from core.staxplus.f_gan import f_gan
-from datasets.utils import MarginalDistribution
 from models.utils import ClassifierFn, MechanismFn
-from models.utils import concat_parents
+from models.utils import concat_parents, sample_through_shuffling
 
 
 def l2(x: Array) -> Array:
@@ -19,7 +17,6 @@ def l2(x: Array) -> Array:
 # If do_parent_name =='all' uses full mechanism else uses partial mechanism
 def functional_counterfactual(do_parent_name: str,
                               parent_dims: Dict[str, int],
-                              marginal_dists: Dict[str, MarginalDistribution],
                               classifiers: Dict[str, ClassifierFn],
                               critic: StaxLayer,
                               mechanism: StaxLayer,
@@ -31,7 +28,7 @@ def functional_counterfactual(do_parent_name: str,
     """
     assert len(parent_dims) > 0
     assert do_parent_name in ['all', *parent_dims.keys()]
-    assert parent_dims.keys() == classifiers.keys() == is_invertible.keys() == marginal_dists.keys()
+    assert parent_dims.keys() == classifiers.keys() == is_invertible.keys()
     assert constraint_function_power >= 1
     do_parent_names = tuple(parent_dims.keys()) if do_parent_name == 'all' else (do_parent_name,)
     source_dist = frozenset() if from_joint else frozenset(parent_dims.keys())
@@ -53,20 +50,13 @@ def functional_counterfactual(do_parent_name: str,
     def apply_mechanism(params: Params, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
         return mechanism_apply_fn(params, (image, parents_to_array(parents), parents_to_array(do_parents)))
 
-    def sampling_fn(rng: KeyArray, sample_shape: Shape, parents: Dict[str, Array]) \
-            -> Tuple[Dict[str, Array], Optional[Array]]:
-        new_parents = {p_name: marginal_dists[p_name].sample(_rng, sample_shape)
-                       for _rng, p_name in zip(random.split(rng, len(do_parent_names)), do_parent_names)}
-        do_parents = {**parents, **new_parents}
-        order = ... if do_parent_name == 'all' else jnp.argsort(jnp.argmax(do_parents[do_parent_name], axis=-1))
-        return do_parents, order
-
     def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Tuple[Array, Any]:
         divergence_params, mechanism_params = params
         (image, parents) = inputs[source_dist]
 
         # sample new parent(s) and perform functional counterfactual
-        do_parents, order = sampling_fn(rng, (image.shape[0],), parents)
+        do_parents = sample_through_shuffling(rng, parents)
+        order = ... if do_parent_name == 'all' else jnp.argsort(jnp.argmax(do_parents[do_parent_name], axis=-1))
         do_image = apply_mechanism(mechanism_params, image, parents, do_parents)
 
         # effectiveness constraint

@@ -1,43 +1,29 @@
 import itertools
 import warnings
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable, Dict, FrozenSet, List, Tuple
+from typing import Callable, Dict, FrozenSet, Sequence, Tuple
 
-import jax.numpy as jnp
-import numpy as np
-import jax.random as random
 import numpy as np
 import tensorflow as tf
 from more_itertools import powerset
 from numpy.typing import NDArray
-from tqdm import tqdm
 
-from core import Array, KeyArray, Shape
+from core import Shape
 
 IMAGE = NDArray[np.uint8]
-ConfoundingFn = Callable[[IMAGE, int], Tuple[IMAGE, int]]
-
-
-@dataclass(frozen=True)
-class MarginalDistribution:
-    marginal_dist: NDArray
-
-    @property
-    def dim(self) -> int:
-        return self.marginal_dist.shape[0]
-
-    def sample(self, rng: KeyArray, sample_shape: Shape) -> Array:
-        do_parent = random.choice(rng, self.dim, shape=sample_shape, p=self.marginal_dist)
-        return jnp.eye(self.dim)[do_parent]
-
 
 Scenario = Tuple[
     Dict[FrozenSet[str], tf.data.Dataset],
     tf.data.Dataset, Dict[str, int],
     Dict[str, bool],
-    Dict[str, MarginalDistribution],
     Shape]
+
+
+@dataclass(frozen=True)
+class ParentDist:
+    dim: int
+    is_discrete: bool
+    is_invertible: bool
 
 
 def image_gallery(array: NDArray, ncols: int = 16, num_images_to_display: int = 128,
@@ -54,61 +40,43 @@ def image_gallery(array: NDArray, ncols: int = 16, num_images_to_display: int = 
     return result
 
 
-def get_uniform_confusion_matrix(num_rows: int, num_columns: int) -> NDArray[np.float_]:
-    return np.ones((num_rows, num_columns)) / num_columns
-
-
-def get_random_confusion_matrix(num_rows: int, num_columns: int, temperature: float = .1, seed: int = 1) \
-        -> NDArray[np.float_]:
-    random_state = np.random.RandomState(seed=seed)
-    logits = random_state.random(size=(num_rows, num_columns))
-    tmp = np.exp(logits / temperature)
-    return np.array(tmp / tmp.sum(1, keepdims=True))
-
-
-def get_diagonal_confusion_matrix(num_rows: int, num_columns: int, noise: float = 0.) -> NDArray[np.float_]:
-    assert num_rows == num_columns
-    return np.array((np.eye(num_rows) * (1. - noise)) + (np.ones((num_rows, num_rows))
-                                                         - np.eye(num_rows)) * noise / (num_rows - 1))
-
-
-def apply_confounding_fns_to_dataset(dataset: tf.data.Dataset, confounding_fns: List[ConfoundingFn],
-                                     parent_dims: Dict[str, int]) -> Tuple[IMAGE, Dict[str, NDArray[np.int_]]]:
-    image_list, parents_list = [], []
-    for image, label in tqdm(dataset.as_numpy_iterator()):
-        parents = [int(label)]
-        for confounding_fn in confounding_fns:
-            image, new_parent = confounding_fn(image, label)
-            parents.append(new_parent)
-        image_list.append(image)
-        parents_list.append(np.array(parents).astype(np.int64))
-    image_dataset = np.array(image_list)
-    parents_dataset = {key: np.array(parents_list)[:, i] for i, key in enumerate(parent_dims.keys())}
-    return image_dataset, parents_dataset
-
-
-def get_resample_fn(num_repeats: tf.Tensor, parent_dims: Dict[str, int]) \
+def get_resample_fn(num_repeats: tf.Tensor, parent_names: Sequence[str]) \
         -> Callable[[tf.Tensor, Dict[str, tf.Tensor]], tf.data.Dataset]:
     def resample_fn(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> tf.data.Dataset:
-        _num_repeats = num_repeats[[tf.argmax(parents[key]) for key in parent_dims.keys()]]
+        _num_repeats = num_repeats[[tf.argmax(parents[parent_name]) for parent_name in parent_names]]
         return tf.data.Dataset.from_tensors((image, parents)).repeat(_num_repeats)
 
     return resample_fn
 
 
+def _get_histogram(parents: Dict[str, NDArray], parent_dists: Dict[str, ParentDist], num_bins=10) -> NDArray:
+    indicator, _shape = {}, []
+    for (parent_name, parent_dist), parent in zip(parent_dists.items(), parents.values()):
+        if parent_dist.is_discrete:
+            ind, s = np.array([parents == i for i in range(parent_dist.dim)]), parent_dist.dim
+        else:
+            _, bin_edges = np.histogram(parents[parent_name], bins=num_bins)
+            ind, s = np.digitize(parent, bin_edges) - 1, num_bins
+        indicator[parent_name].append(_shape)
+        _shape.append(s)
+    index_map = np.array([np.logical_and.reduce(a) for a in itertools.product(*indicator.values())])
+    index_map = index_map.reshape((*_shape, -1))
+    histogram = np.sum(index_map, axis=-1)
+    return histogram
+
+
 def get_simulated_intervention_datasets(dataset: tf.data.Dataset,
                                         parents: Dict[str, NDArray],
-                                        parent_dims: Dict[str, int]) \
-        -> Tuple[Dict[FrozenSet, tf.data.Dataset], Dict[str, MarginalDistribution]]:
-    indicator = {key: [parents[key] == i for i in range(dim)] for key, dim in parent_dims.items()}
-    index_map = np.array([np.logical_and.reduce(a) for a in itertools.product(*indicator.values())])
-    index_map = index_map.reshape((*parent_dims.values(), -1))
-    counts = np.sum(index_map, axis=-1)
-    if np.any(counts == 0):
+                                        parent_dists: Dict[str, ParentDist],
+                                        num_bins: int = 10) -> Dict[FrozenSet, tf.data.Dataset]:
+    histogram = _get_histogram(parents, parent_dists, num_bins=num_bins)
+    joint_dist = histogram / np.sum(histogram)
+    if np.any(histogram == 0):
         message = '\n'.join([', '.join([f'{parent} == {val[i]}' for i, parent in enumerate(parents)])
-                             for val in np.argwhere(counts == 0)])
+                             for val in np.argwhere(histogram == 0)])
         warnings.warn(f'Distribution does not have full support in:\n{message}')
-    joint_dist = counts / np.sum(counts)
+
+    parent_names = list(parents.keys())
     datasets, marginals = {}, {}
     for parent_set in powerset(parents.keys()):
         axes = tuple(np.flatnonzero(np.array([parent in parent_set for parent in parents])))
@@ -117,32 +85,12 @@ def get_simulated_intervention_datasets(dataset: tf.data.Dataset,
             product_of_marginals = product_of_marginals \
                                    * np.sum(joint_dist, axis=tuple(set(range(joint_dist.ndim)) - {axis}), keepdims=True)
         interventional_dist = product_of_marginals * np.sum(joint_dist, axis=axes, keepdims=True)
-        weights = interventional_dist / counts
-        num_repeats = np.round(weights / np.min(weights[counts > 0])).astype(int)
-        num_repeats[counts == 0] = 0
+        weights = interventional_dist / histogram
+        num_repeats = np.round(weights / np.min(weights[histogram > 0])).astype(int)
+        num_repeats[histogram == 0] = 0
         print(f'{str(parent_set)}: max_num_repeat={np.max(num_repeats):d}; total_num_repeats:{np.sum(num_repeats):d}')
-        unconfounded_dataset = dataset.flat_map(get_resample_fn(tf.convert_to_tensor(num_repeats), parent_dims))
-        unconfounded_dataset = unconfounded_dataset.shuffle(buffer_size=np.sum(counts * num_repeats),
+        unconfounded_dataset = dataset.flat_map(get_resample_fn(tf.convert_to_tensor(num_repeats), parent_names))
+        unconfounded_dataset = unconfounded_dataset.shuffle(buffer_size=np.sum(histogram * num_repeats),
                                                             reshuffle_each_iteration=True)
         datasets[frozenset(parent_set)] = unconfounded_dataset
-        if len(parent_set) == 1:
-            marginals[parent_set[0]] = MarginalDistribution(np.squeeze(product_of_marginals))
-
-    return datasets, marginals
-
-
-def load_cached_dataset(dataset_dir: Path, dataset: tf.data.Dataset, confounding_fns: List[ConfoundingFn],
-                        parent_dims: Dict[str, int]) -> Tuple[tf.data.Dataset, Dict[str, NDArray]]:
-    parents_path = str(dataset_dir / 'parents.npy')
-    images_path = str(dataset_dir / 'images.npy')
-    try:
-        images = np.load(images_path)
-        parents = np.load(parents_path, allow_pickle=True).item()
-    except FileNotFoundError:
-        print('Dataset not found, creating new copy...')
-        images, parents = apply_confounding_fns_to_dataset(dataset, confounding_fns, parent_dims)
-        dataset_dir.mkdir(exist_ok=True, parents=True)
-        np.save(images_path, images)
-        np.save(parents_path, parents)
-    dataset = tf.data.Dataset.from_tensor_slices((images, parents))
-    return dataset, parents
+    return datasets

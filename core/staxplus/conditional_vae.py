@@ -59,7 +59,7 @@ def c_vae(encoder: StaxLayer,
         x = _rescale(x)
         mean_z, _scale_z = enc_apply_fn(enc_params, (x, z_c))
         scale_z = nn.softplus(_scale_z)
-        z = rsample(rng, mean_z, scale_z)  # in theory scale_z must be positive but in practise it does not matter
+        z = rsample(rng, mean_z, scale_z)
         recon = dec_apply_fn(dec_params, (z, y_c))
         recon = nn.sigmoid(recon) if bernoulli_ll else recon
         log_px = calc_ll(x, recon)

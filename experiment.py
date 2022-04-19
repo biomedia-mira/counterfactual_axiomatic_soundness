@@ -9,7 +9,6 @@ import tensorflow_datasets as tfds
 
 from core import GradientTransformation, Params, StaxLayer
 from core.train import train
-from datasets.confounded_mnist import Scenario
 from models import classifier, ClassifierFn, conditional_vae, functional_counterfactual, MechanismFn
 
 

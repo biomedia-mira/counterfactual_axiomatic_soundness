@@ -1,121 +1,98 @@
+import pickle
+from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Dict, FrozenSet, List, Tuple
+from typing import Callable, Dict, Tuple
 
 import jax
+import jax.random as random
 import matplotlib.pyplot as plt
 import numpy as np
+import numpyro
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from numpy.typing import NDArray
-from skimage import draw, morphology, transform
+from numpyro.distributions import Normal, TransformedDistribution
+from numpyro.distributions.transforms import AffineTransform, ComposeTransform, SigmoidTransform
+from skimage import morphology, transform
 from tensorflow.keras import layers
+from tqdm import tqdm
 
-from core import Shape
-from datasets.morphomnist import skeleton
 from datasets.morphomnist.morpho import ImageMorphology
-from datasets.utils import ConfoundingFn, get_simulated_intervention_datasets, IMAGE, image_gallery, load_cached_dataset
-from datasets.utils import get_diagonal_confusion_matrix, get_uniform_confusion_matrix
-from datasets.utils import MarginalDistribution
-from datasets.utils import Scenario
+from datasets.utils import get_simulated_intervention_datasets, IMAGE, image_gallery, ParentDist
 
 
-def function_dict_to_confounding_fn(function_dict: Dict[int, Callable[[IMAGE], IMAGE]],
-                                    cm: NDArray[np.float_]) -> ConfoundingFn:
-    def apply_fn(image: IMAGE, confounder: int) -> Tuple[IMAGE, int]:
-        idx = np.random.choice(cm.shape[1], p=cm[confounder])
-        return function_dict[idx](image), idx
-
-    return apply_fn
+def set_colour(image: IMAGE, colour: NDArray) -> IMAGE:
+    return np.array(np.repeat(image, 3, axis=-1) * colour).astype(np.uint8)
 
 
-def get_thickening_fn(amount: float = 1.2) -> Callable[[IMAGE], IMAGE]:
-    def apply_fn(image: IMAGE) -> IMAGE:
-        morph = ImageMorphology(image[..., 0])
-        radius = int(amount * morph.scale * morph.mean_thickness / 2.)
-        return np.array(np.expand_dims(morphology.dilation(image[..., 0], morphology.disk(radius)), axis=-1))
-
-    return apply_fn
-
-
-def get_thinning_fn(amount: float = .7) -> Callable[[IMAGE], IMAGE]:
-    def apply_fn(image: IMAGE) -> IMAGE:
-        morph = ImageMorphology(image[..., 0])
-        radius = int(amount * morph.scale * morph.mean_thickness / 2.)
-        return np.array(np.expand_dims(morphology.erosion(image[..., 0], morphology.disk(radius)), axis=-1))
-
-    return apply_fn
+@lru_cache(maxsize=None)
+def _get_disk(radius: int, scale: int):
+    mag_radius = scale * radius
+    mag_disk = morphology.disk(mag_radius, dtype=np.float64)
+    disk = transform.pyramid_reduce(mag_disk, downscale=scale, order=1, multichannel=False)
+    return disk
 
 
-def get_swell_fn(strength: float = 3, radius: float = 7) -> Callable[[IMAGE], IMAGE]:
-    def _warp(xy: IMAGE, morph: ImageMorphology) -> IMAGE:
-        loc_sampler = skeleton.LocationSampler()
-        centre = loc_sampler.sample(morph)[::-1]
-        _radius = (radius * np.sqrt(morph.mean_thickness) / 2.) * morph.scale
-        offset_xy = xy - centre
-        distance = np.hypot(*offset_xy.T)
-        weight = (distance / _radius) ** (strength - 1)
-        weight[distance > _radius] = 1.
-        return np.array(centre + weight[:, None] * offset_xy)
-
-    def swell(image: IMAGE) -> IMAGE:
-        assert image.ndim == 3 and image.shape[-1] == 1
-        morph = ImageMorphology(image[..., 0])
-        return np.array(np.expand_dims(transform.warp(image[..., 0], lambda xy: _warp(xy, morph)), axis=-1))
-
-    return swell
+def set_thickness(image: IMAGE, target_thickness: float) -> IMAGE:
+    morph = ImageMorphology(image[..., 0], scale=16)
+    delta = target_thickness - morph.mean_thickness
+    radius = int(morph.scale * abs(delta) / 2.)
+    disk = _get_disk(radius, scale=16)
+    img = morph.binary_image
+    if delta >= 0:
+        up_scale_image = morphology.dilation(img, disk)
+    else:
+        up_scale_image = morphology.erosion(img, disk)
+    image = morph.downscale(np.float32(up_scale_image))
+    return image[..., np.newaxis]
 
 
-def get_fracture_fn(thickness: float = 1.5, prune: float = 2, num_frac: int = 3) -> Callable[[IMAGE], IMAGE]:
-    _ANGLE_WINDOW = 2
-    _FRAC_EXTENSION = .5
-
-    def _endpoints(morph: ImageMorphology, centre: NDArray) -> Tuple[NDArray[np.int_], NDArray[np.int_]]:
-        angle = skeleton.get_angle(morph.skeleton, *centre, _ANGLE_WINDOW * morph.scale)
-        length = morph.distance_map[centre[0], centre[1]] + _FRAC_EXTENSION * morph.scale
-        angle += np.pi / 2.  # Perpendicular to the skeleton
-        normal = length * np.array([np.sin(angle), np.cos(angle)])
-        p0 = (centre + normal).astype(int)
-        p1 = (centre - normal).astype(int)
-        return p0, p1
-
-    def _draw_line(img: IMAGE, p0: NDArray[np.int_], p1: NDArray[np.int_], brush: NDArray[np.bool_]) -> None:
-        h, w = brush.shape
-        ii, jj = draw.line(*p0, *p1)
-        for i, j in zip(ii, jj):
-            img[i:i + h, j:j + w] &= brush
-
-    def fracture(image: IMAGE) -> IMAGE:
-        morph = ImageMorphology(image[..., 0])
-        loc_sampler = skeleton.LocationSampler(prune, prune)
-
-        up_thickness = thickness * morph.scale
-        r = int(np.ceil((up_thickness - 1) / 2))
-        brush = ~morphology.disk(r).astype(bool)
-        frac_img = np.pad(image[..., 0], pad_width=r, mode='constant', constant_values=False)
-        try:
-            centres = loc_sampler.sample(morph, num_frac)
-        except ValueError:  # Skeleton vanished with pruning, attempt without
-            centres = skeleton.LocationSampler().sample(morph, num_frac)
-        for centre in centres:
-            p0, p1 = _endpoints(morph, centre)
-            _draw_line(frac_img, p0, p1, brush)
-        return np.array(np.expand_dims(frac_img[r:-r, r:-r], axis=-1))
-
-    return fracture
+def set_intensity(image: IMAGE, intensity: float) -> IMAGE:
+    threshold = 0.5
+    img_min, img_max = np.min(image), np.max(image)
+    mask = (image >= img_min + (img_max - img_min) * threshold)
+    avg_intensity = np.median(image[mask])
+    factor = intensity / avg_intensity
+    return np.clip(image * factor, 0, 255).astype(np.uint8)
 
 
-def get_colourise_fn(cm: NDArray[np.float_]) -> ConfoundingFn:
-    colours = tf.constant(((1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1),
-                           (0, 1, 1), (1, 1, 1), (.5, 0, 0), (0, .5, 0), (0, 0, .5)))
+# Thickness intensity model
+def thickness_intensity_model(confound: bool, n_samples=None, scale=0.5, invert=False):
+    with numpyro.plate('observations', n_samples):
+        k1, k2, k3 = random.split(random.PRNGKey(1), 3)
+        thickness_transform = ComposeTransform(
+            [AffineTransform(-1., 1.), SigmoidTransform(), AffineTransform(1.5, 4.5)])
+        thickness_dist = TransformedDistribution(Normal(0., 1.), thickness_transform)
+        thickness = numpyro.sample('thickness', thickness_dist, rng_key=k1)
+        multiplier = -1 if invert else 1
+        # if not confound intensity does not depend on thickness
+        _thickness = thickness if confound else numpyro.sample('thickness', thickness_dist, rng_key=k2)
+        loc = (_thickness - 2.5) * 2 * multiplier if confound else 0.
+        transforms = ComposeTransform([SigmoidTransform(), AffineTransform(64, 191)])
+        intensity = numpyro.sample('intensity', TransformedDistribution(Normal(loc, scale), transforms), rng_key=k3)
+    return np.array(thickness), np.array(intensity)
 
-    def apply_fn(image: IMAGE, confounder: int) -> Tuple[IMAGE, int]:
-        idx = np.random.choice(cm.shape[1], p=cm[confounder])
-        colour = colours[idx]
-        return np.array(np.repeat(image, 3, axis=-1) * np.array(colour)).astype(np.uint8), int(idx)
 
-    return apply_fn
+def digit_thickness_intensity(ds_train: tf.data.Dataset, ds_test: tf.data.Dataset, confound: bool):
+    parent_dists = {'digit': ParentDist(dim=10, is_discrete=True, is_invertible=False),
+                    'thickness': ParentDist(dim=1, is_discrete=False, is_invertible=True),
+                    'intensity': ParentDist(dim=1, is_discrete=False, is_invertible=True)}
+    input_shape = (-1, 28, 28, 1)
+
+    def confound_dataset(dataset: tf.data.Dataset, confound: bool = True) -> Tuple[NDArray, Dict[str, NDArray]]:
+        digit = np.array([digit for _, digit in iter(dataset)])
+        thickness, intensity = thickness_intensity_model(confound=confound, n_samples=len(dataset))
+        images = np.array([set_intensity(set_thickness(image, t), i)
+                           for (image, _), t, i in tqdm(zip(dataset.as_numpy_iterator(), thickness, intensity))])
+        parents = {'digit': digit, 'thickness': thickness, 'intensity': intensity}
+        return images, parents
+
+    train_images, train_parents = confound_dataset(ds_train, confound=confound)
+    test_images, test_parents = confound_dataset(ds_test, confound=False)
+    return train_images, train_parents, test_images, test_parents, parent_dists, input_shape
 
 
+# Confounded MNIST
 def get_encode_fn(parent_dims: Dict[str, int]) \
         -> Callable[[tf.Tensor, Dict[str, tf.Tensor]], Tuple[tf.Tensor, Dict[str, tf.Tensor]]]:
     def encode_fn(image: tf.Tensor, patents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
@@ -134,131 +111,38 @@ def show_images(dataset: tf.data.Dataset, title: str) -> None:
     plt.show(block=False)
 
 
-def create_confounded_mnist_dataset(data_dir: Path,
-                                    dataset_name: str,
-                                    train_confounding_fns: List[ConfoundingFn],
-                                    test_confounding_fns: List[ConfoundingFn],
-                                    parent_dims: Dict[str, int],
-                                    de_confound: bool,
-                                    plot: bool = False) \
-        -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], tf.data.Dataset, Dict[str, MarginalDistribution], Shape]:
-    input_shape = (-1, 28, 28, 3)
-    ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False,
-                                  data_dir=f'{str(data_dir)}/mnist', as_supervised=True)
+def confounded_mnist(data_dir: Path, dataset_name: str, confound: bool, plot: bool = False):
+    fn = {'digit_thickness_intensity': digit_thickness_intensity}[dataset_name]
+    dataset_path = Path(f'{str(data_dir)}/{dataset_name}' + (f'_confounded' if confound else ''))
+    try:
+        with open(dataset_path, 'rb') as f:
+            dataset = pickle.load(f)
+    except FileNotFoundError:
+        print('Dataset not found, creating new copy...')
+        ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False,
+                                      data_dir=f'{str(data_dir)}/mnist', as_supervised=True)
+        dataset = fn(ds_train, ds_test, confound)
+        with open(dataset_path, 'wb') as f:
+            pickle.dump(dataset, f)
+    train_images, train_parents, test_images, test_parents, parent_dists, input_shape = dataset
+    train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_parents))
+    test_dataset = tf.data.Dataset.from_tensor_slices((test_images, test_parents))
+    simulated_intervention_datasets = get_simulated_intervention_datasets(train_dataset, train_parents, parent_dists)
 
-    dataset_dir = Path(f'{str(data_dir)}/{dataset_name}')
-    train_data, train_parents = load_cached_dataset(dataset_dir / 'train', ds_train, train_confounding_fns, parent_dims)
-    test_data, _ = load_cached_dataset(dataset_dir / 'test', ds_test, test_confounding_fns, parent_dims)
     encode_fn = get_encode_fn(parent_dims)
-    train_data = train_data.map(encode_fn)
-    test_data = test_data.map(encode_fn)
+    train_dataset = train_dataset.map(encode_fn)
+    test_dataset = test_dataset.map(encode_fn)
 
-    train_data_dict, marginals = get_simulated_intervention_datasets(train_data, train_parents, parent_dims)
-    train_data_dict = train_data_dict if de_confound else dict.fromkeys(train_data_dict.keys(), train_data)
-
-    # def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
-    #     img = layers.RandomCrop(28, 28)(tf.pad(image, ((2, 2), (2, 2), (0, 0)), mode='constant', constant_values=-1.))
-    #     return img, parents
 
     def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
         image = layers.RandomZoom(height_factor=.2, width_factor=.2, fill_mode='constant', fill_value=-1.)(image)
         return image, parents
-
 
     train_data_dict = jax.tree_map(lambda ds: ds.map(augment), train_data_dict)
 
     if plot:
         for key, dataset in train_data_dict.items():
             show_images(dataset, f'train set {str(key)}')
-        show_images(test_data, f'test set')
+        show_images(test_dataset, f'test set')
 
-    return train_data_dict, test_data, marginals, input_shape
-
-
-def digit_colour_scenario(data_dir: Path, confound: bool, de_confound: bool) -> Scenario:
-    assert not (not confound and de_confound)
-    parent_dims = {'digit': 10, 'colour': 10}
-    is_invertible = {'digit': False, 'colour': True}
-    test_colourise_cm = get_uniform_confusion_matrix(10, 10)
-    train_colourise_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if confound else test_colourise_cm
-    train_colourise_fn = get_colourise_fn(train_colourise_cm)
-    test_colourise_fn = get_colourise_fn(test_colourise_cm)
-    train_confounding_fns = [train_colourise_fn]
-    test_confounding_fns = [test_colourise_fn]
-    dataset_name = 'mnist_digit_colour' + ('_confounded' if confound else '')
-    train_datasets, test_dataset, marginals, input_shape = \
-        create_confounded_mnist_dataset(data_dir, dataset_name, train_confounding_fns, test_confounding_fns,
-                                        parent_dims, de_confound)
-    return train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape
-
-
-def digit_fracture_colour_scenario(data_dir: Path, confound: bool, de_confound: bool) -> Scenario:
-    assert not (not confound and de_confound)
-    parent_dims = {'digit': 10, 'fracture': 2, 'colour': 10}
-    is_invertible = {'digit': False, 'fracture': False, 'colour': True}
-
-    even_heavy_cm = np.zeros(shape=(10, 2))
-    even_heavy_cm[0:-1:2] = (.1, .9)
-    even_heavy_cm[1::2] = (.9, .1)
-
-    test_fracture_cm = get_uniform_confusion_matrix(10, 2)
-    test_colourise_cm = get_uniform_confusion_matrix(10, 10)
-    train_fracture_cm = even_heavy_cm if confound else test_fracture_cm
-    train_colourise_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if confound else test_colourise_cm
-
-    function_dict = {0: lambda x: x, 1: get_fracture_fn(num_frac=1)}
-    train_fracture_fn = function_dict_to_confounding_fn(function_dict, train_fracture_cm)
-    test_fracture_fn = function_dict_to_confounding_fn(function_dict, test_fracture_cm)
-    train_colourise_fn = get_colourise_fn(train_colourise_cm)
-    test_colourise_fn = get_colourise_fn(test_colourise_cm)
-
-    train_confounding_fns = [train_fracture_fn, train_colourise_fn]
-    test_confounding_fns = [test_fracture_fn, test_colourise_fn]
-    dataset_name = 'mnist_digit_fracture_colour' + ('_confounded' if confound else '')
-    train_datasets, test_dataset, marginals, input_shape = \
-        create_confounded_mnist_dataset(data_dir, dataset_name, train_confounding_fns, test_confounding_fns,
-                                        parent_dims, de_confound)
-    return train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape
-
-
-def digit_thickness_colour_scenario(data_dir: Path, confound: bool, de_confound: bool) -> Scenario:
-    assert not (not confound and de_confound)
-    parent_dims = {'digit': 10, 'thickness': 2, 'colour': 10}
-    is_invertible = {'digit': False, 'thickness': True, 'colour': True}
-
-    even_heavy_cm = np.zeros(shape=(10, 2))
-    even_heavy_cm[0:-1:2] = (.1, .9)
-    even_heavy_cm[1::2] = (.9, .1)
-
-    # thickness
-    test_thickness_cm = get_uniform_confusion_matrix(10, 2)
-    train_thickness_cm = even_heavy_cm if confound else test_thickness_cm
-    function_dict = {0: get_thinning_fn(), 1: get_thickening_fn()}
-    train_thickness_fn = function_dict_to_confounding_fn(function_dict, train_thickness_cm)
-    test_thickness_fn = function_dict_to_confounding_fn(function_dict, test_thickness_cm)
-
-    # colour
-    test_colourise_cm = get_uniform_confusion_matrix(10, 10)
-    train_colourise_cm = get_diagonal_confusion_matrix(10, 10, noise=.1) if confound else test_colourise_cm
-    train_colourise_fn = get_colourise_fn(train_colourise_cm)
-    test_colourise_fn = get_colourise_fn(test_colourise_cm)
-
-    # rot90
-    # prime_heavy_cm = np.zeros(shape=(10, 2))
-    # for i in [2, 3, 5, 7]:
-    #     prime_heavy_cm[i] = (.1, .9)
-    # for i in [0, 1, 4, 6, 8, 9]:
-    #     prime_heavy_cm[i] = (.9, .1)
-    # test_rot90_cm = get_uniform_confusion_matrix(10, 2)
-    # train_rot90_cm = prime_heavy_cm if confound else test_rot90_cm
-    # function_dict = {0: lambda x: x, 1: np.rot90}
-    # train_rot90_fn = function_dict_to_confounding_fn(function_dict, train_rot90_cm)
-    # test_rot90_fn = function_dict_to_confounding_fn(function_dict, test_rot90_cm)
-
-    train_confounding_fns = [train_thickness_fn, train_colourise_fn]
-    test_confounding_fns = [test_thickness_fn, test_colourise_fn]
-    dataset_name = 'mnist_digit_thickness_colour' + ('_confounded' if confound else '')
-    train_datasets, test_dataset, marginals, input_shape = \
-        create_confounded_mnist_dataset(data_dir, dataset_name, train_confounding_fns, test_confounding_fns,
-                                        parent_dims, de_confound)
-    return train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape
+    return train_dataset, test_dataset, parent_dists, input_shape

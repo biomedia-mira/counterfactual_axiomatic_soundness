@@ -7,12 +7,10 @@ from jax import value_and_grad
 
 from core import Array, GradientTransformation, KeyArray, Model, OptState, Params, Shape, StaxLayer
 from core.staxplus.conditional_vae import c_vae
-from datasets.utils import MarginalDistribution
-from models.utils import concat_parents, MechanismFn
+from models.utils import concat_parents, MechanismFn, sample_through_shuffling
 
 
 def conditional_vae(parent_dims: Dict[str, int],
-                    marginal_dists: Dict[str, MarginalDistribution],
                     vae_encoder: StaxLayer,
                     vae_decoder: StaxLayer,
                     from_joint: bool = True) -> Tuple[Model, Callable[[Params], MechanismFn]]:
@@ -28,15 +26,14 @@ def conditional_vae(parent_dims: Dict[str, int],
         return output_shape, params
 
     def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Tuple[Array, Dict[str, Array]]:
-        k1, k2 = random.split(rng, 2)
+        k1, k2, k3 = random.split(rng, 3)
         image, parents = inputs[source_dist]
         _parents = concat_parents(parents)
         loss, recon, vae_output = _apply_fn(params, (image, _parents, _parents), k1)
         # conditional samples just for visualisation, not part of training
-        do_parents = {p_name: marginal_dists[p_name].sample(_rng, (image.shape[0],))
-                      for _rng, p_name in zip(random.split(k2, len(parent_names)), parent_names)}
+        do_parents = sample_through_shuffling(k2, parents)
         _do_parents = concat_parents(do_parents)
-        _, samples, _ = _apply_fn(params, (image, _parents, _do_parents), k2)
+        _, samples, _ = _apply_fn(params, (image, _parents, _do_parents), k3)
         return loss, {'image': image, 'samples': samples, 'loss': loss[jnp.newaxis], **vae_output}
 
     def update(params: Params, optimizer: GradientTransformation, opt_state: OptState, inputs: Any, rng: KeyArray) \
