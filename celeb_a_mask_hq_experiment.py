@@ -11,8 +11,8 @@ from flaxmodels.stylegan2.discriminator import Discriminator as StyleGanDiscrimi
 from flaxmodels.stylegan2.generator import Generator as StyleGanGenerator
 from jax.example_libraries.stax import Dense, Flatten, LeakyRelu, serial
 
-from core import Array, KeyArray, Params, Shape, ShapeTree
-from core.staxplus import ResBlock, StaxLayer
+from staxplus import Array, KeyArray, Params, Shape, ShapeTree
+from staxplus._staxplus import ResBlock, StaxLayer
 from datasets.celeba_mask_hq import mustache_goatee_scenario
 from experiment import get_discriminative_models, get_mechanisms, TrainConfig
 from identifiability_tests import evaluate, print_test_results

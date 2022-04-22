@@ -1,11 +1,12 @@
 # https://arxiv.org/abs/1606.00709
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable, Tuple
 
+import jax
 import jax.numpy as jnp
 from jax.example_libraries.stax import Dense, Flatten, serial
 from jax.lax import stop_gradient
-import jax
-from core import Array, Params, StaxLayer
+
+from staxplus.types import Array, ArrayTree, Params, StaxLayer
 
 FDivergence = Tuple[Callable[[Array], Array], Callable[[Array], Array]]
 
@@ -110,7 +111,7 @@ def f_gan(critic: StaxLayer, mode: str = 'gan', trick_g: bool = False, critic_di
         t_q_dist = critic_apply_fn(params, q_sample)
         return jnp.mean(activation(t_p_dist)) - jnp.mean(f_conj(activation(t_q_dist)))
 
-    def apply_fn(params: Params, p_sample: Array, q_sample: Array, **kwargs: Any) -> Tuple[Array, Dict[str, Array]]:
+    def apply_fn(params: Params, p_sample: Array, q_sample: Array, **kwargs: Any) -> ArrayTree:
         divergence = calc_divergence(params, p_sample, stop_gradient(q_sample))
         critic_loss = -divergence
         if not trick_g:
@@ -123,4 +124,4 @@ def f_gan(critic: StaxLayer, mode: str = 'gan', trick_g: bool = False, critic_di
                   'generator_loss': generator_loss[jnp.newaxis]}
         return loss, output
 
-    return init_fn, apply_fn
+    return StaxLayer(init_fn, apply_fn)

@@ -1,13 +1,15 @@
 from typing import Any, Callable, Dict, Optional, Tuple
 
-import jax
 import jax.numpy as jnp
 import optax
-from jax import tree_map, value_and_grad, vmap
+from staxplus import (Array, ArrayTree, GradientTransformation, KeyArray, Model,
+                  OptState, Params, Shape, StaxLayer)
+from staxplus.f_gan import f_gan
+from jax import value_and_grad, vmap
+from jax.tree_util import tree_map
 
-from core import Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, Shape, StaxLayer
-from core.staxplus.f_gan import f_gan
-from models.utils import concat_parents, DiscriminativeFn, MechanismFn, ParentDist, sample_through_shuffling
+from models.utils import (DiscriminativeFn, MechanismFn, ParentDist,
+                          concat_parents, sample_through_shuffling)
 
 
 def l2(x: Array) -> Array:
@@ -25,7 +27,7 @@ def functional_counterfactual(do_parent_name: str,
     """
     Behaves like a partial mechanism if the set of do_parent_names is smaller than parent_dims.keys()
     """
-    parent_dims = jax.tree_map(lambda x: x.dim, parent_dists)
+    parent_dims = tree_map(lambda x: x.dim, parent_dists)
     assert len(parent_dims) > 0
     assert do_parent_name in ['all', *parent_dists.keys()]
     assert parent_dims.keys() == classifiers.keys()

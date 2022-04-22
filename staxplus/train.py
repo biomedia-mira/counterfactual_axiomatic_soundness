@@ -6,22 +6,20 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from clu.metric_writers import create_default_writer
-from datasets.utils import image_gallery
 from jax.tree_util import tree_map
 from tqdm import tqdm
+from utils import flatten_nested_dict, image_gallery
 
-from core import (Array, GradientTransformation, Model, Params, Shape,
-                  flatten_nested_dict)
-
+from staxplus.types import Array, ArrayTree, GradientTransformation, Model, Params, Shape
 
 
 def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str], None]] = None) \
-        -> Callable[[Dict, int], None]:
+        -> Callable[[Dict[Any, Any], int], None]:
     logdir = (job_dir / 'logs' / name)
     logdir.mkdir(exist_ok=True, parents=True)
     writer = create_default_writer(str(logdir))
 
-    def writer_fn(evaluation: Dict, step: int) -> None:
+    def writer_fn(evaluation: Dict[Any, Any], step: int) -> None:
         flat = flatten_nested_dict(evaluation)
         scalars = {'/'.join(key): jnp.mean(value)
                    for key, value in flat.items() if value.ndim <= 1}
@@ -48,8 +46,8 @@ def accumulate_output(new_output: Any, cum_output: Optional[Any]) -> Any:
 def train(model: Model,
           job_dir: Path,
           seed: int,
-          train_data: Iterable,
-          test_data: Optional[Iterable],
+          train_data: Iterable[ArrayTree],
+          test_data: Optional[Iterable[ArrayTree]],
           input_shape: Shape,
           optimizer: GradientTransformation,
           num_steps: int,
@@ -58,7 +56,7 @@ def train(model: Model,
           save_every: int,
           overwrite: bool,
           use_jit: bool = True) -> Params:
-    model_path = job_dir / f'model.npy'
+    model_path = job_dir / 'model.npy'
     if model_path.exists() and not overwrite:
         return np.load(str(model_path), allow_pickle=True)
     job_dir.mkdir(exist_ok=True, parents=True)
@@ -75,8 +73,7 @@ def train(model: Model,
         if step >= num_steps:
             break
         rng, _ = jax.random.split(rng)
-        params, opt_state, loss, output = update_fn(
-            params, optimizer, opt_state, rng, inputs)
+        params, opt_state, loss, output = update_fn(params, optimizer, opt_state, rng, inputs)
         if step % log_every == 0:
             train_writer(output, step)
         if jnp.isnan(loss):

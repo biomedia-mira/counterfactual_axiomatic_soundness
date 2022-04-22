@@ -12,8 +12,8 @@ from flaxmodels.stylegan2.discriminator import Discriminator as StyleGanDiscrimi
 from flaxmodels.stylegan2.generator import Generator as StyleGanGenerator
 from jax.lax import stop_gradient
 
-from core import Array, GradientTransformation, KeyArray, Model, OptState, Params, Shape
-from core.train import train
+from staxplus import Array, GradientTransformation, KeyArray, Model, OptState, Params, Shape
+from staxplus.train import train
 from datasets.celeba_mask_hq import mustache_goatee_scenario
 from experiment import prep_mechanism_data, TrainConfig
 from models.utils import MechanismFn

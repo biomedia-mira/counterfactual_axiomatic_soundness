@@ -1,18 +1,17 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from typing import Dict, FrozenSet, Iterable, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, Sequence, Tuple
 
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-from core import GradientTransformation, StaxLayer
-from core.train import train
-from datasets.utils import Scenario
+from datasets.utils import Array, Scenario
 from models.conditional_vae import conditional_vae
 from models.discriminative_model import discriminative_model
 from models.functional_counterfactual import functional_counterfactual
 from models.utils import DiscriminativeFn, MechanismFn
+from staxplus import GradientTransformation, StaxLayer
+from staxplus.train import train
 
 
 def to_numpy_iterator(data: tf.data.Dataset, batch_size: int, drop_remainder: bool = True) -> Any:
@@ -24,7 +23,7 @@ def prep_mechanism_data(do_parent_name: str,
                         from_joint: bool,
                         train_datasets: Dict[FrozenSet[str], tf.data.Dataset],
                         test_dataset: tf.data.Dataset,
-                        batch_size: int) -> Tuple[Iterable, Iterable]:
+                        batch_size: int) -> Tuple[Iterable[Any], Iterable[Any]]:
     do_parent_names = tuple(parent_names) if do_parent_name == 'all' else (do_parent_name,)
     source_dist = frozenset() if from_joint else frozenset(parent_names)
     target_dist = frozenset(do_parent_names) if from_joint else frozenset(parent_names)
@@ -57,7 +56,9 @@ def get_discriminative_models(job_dir: Path,
     for parent_name, parent_dist in parent_dists.items():
         model, get_discriminative_fn = discriminative_model(parent_dist, layers=layers)
         target_dist = frozenset((parent_name,))
-        select_parent = lambda image, parents: (image, parents[parent_name])
+
+        def select_parent(image: Array, parents: Dict[str, Array]) -> Tuple[Array, Array]:
+            return image, parents[parent_name]
         train_data = to_numpy_iterator(train_datasets[target_dist].map(select_parent),
                                        batch_size=train_config.batch_size)
         test_data = to_numpy_iterator(test_dataset.map(select_parent), batch_size=train_config.batch_size,

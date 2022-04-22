@@ -1,20 +1,14 @@
-import re
-from typing import Callable, Dict, FrozenSet, Sequence, Tuple, cast, Mapping
+from typing import Callable, Dict, Tuple
 
 import jax.numpy as jnp
 import jax.random as random
 import optax
-from core import (Array, GradientTransformation, KeyArray, Model,
-                  OptState, Params, Shape, ShapeTree, StaxLayer)
-from core.staxplus.conditional_vae import c_vae
 from jax import value_and_grad
 from jax.tree_util import tree_map
+from staxplus import (Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, ShapeTree, StaxLayer,
+                      c_vae)
 
-from chex import ArrayTree
-
-
-from models.utils import (MechanismFn, ParentDist, concat_parents,
-                          sample_through_shuffling)
+from models.utils import MechanismFn, ParentDist, concat_parents, sample_through_shuffling
 
 
 def conditional_vae(parent_dists: Dict[str, ParentDist],
@@ -33,11 +27,11 @@ def conditional_vae(parent_dists: Dict[str, ParentDist],
         return params
 
     def apply_fn(params: Params, rng: KeyArray, inputs: ArrayTree) -> Tuple[Array, Dict[str, Array]]:
-        assert isinstance(inputs, dict)
+        assert isinstance(inputs, dict) and all(isinstance(el, Array) for el in inputs.values())
         k1, k2, k3 = random.split(rng, 3)
         image, parents = inputs[source_dist]
         _parents = concat_parents(parents)
-        loss, recon, vae_output = _apply_fn(params, (image, _parents, _parents), k1)
+        loss, _, vae_output = _apply_fn(params, (image, _parents, _parents), k1)
         # conditional samples just for visualisation, not part of training
         do_parents = sample_through_shuffling(k2, parents)
         _do_parents = concat_parents(do_parents)
@@ -64,5 +58,3 @@ def conditional_vae(parent_dists: Dict[str, ParentDist],
             return _apply_fn(params, (image, concat_parents(parents), concat_parents(do_parents)), rng)[1]
         return mechanism_fn
     return Model(init_fn, apply_fn, update_fn), get_mechanism_fn
-
-

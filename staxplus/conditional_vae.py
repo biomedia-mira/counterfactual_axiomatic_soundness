@@ -1,11 +1,12 @@
 from functools import partial
-from typing import Any, Dict, Tuple
+from typing import Any, Tuple
 
 import jax.nn as nn
 import jax.numpy as jnp
 from jax import random, vmap
 
-from core import Array, KeyArray, Params, Shape, StaxLayer
+from staxplus.layers import StaxLayer
+from staxplus.types import Array, ArrayTree, KeyArray, Params, ShapeTree
 
 
 def rescale(x: Array, x_range: Tuple[float, float], target_range: Tuple[float, float]) -> Array:
@@ -46,14 +47,14 @@ def c_vae(encoder: StaxLayer,
     _rescale = partial(rescale, x_range=input_range, target_range=(0., 1.)) if do_rescale else lambda x: x
     _undo_rescale = partial(rescale, x_range=(0., 1.), target_range=input_range) if do_rescale else lambda x: x
 
-    def init_fn(rng: KeyArray, input_shape: Shape) -> Tuple[Shape, Params]:
+    def init_fn(rng: KeyArray, input_shape: ShapeTree) -> Tuple[ShapeTree, Params]:
         k1, k2 = random.split(rng, 2)
         (enc_output_shape, _), enc_params = enc_init_fn(k1, input_shape)
         dec_input_shape = (enc_output_shape, input_shape[1])
         output_shape, dec_params = dec_init_fn(k2, dec_input_shape)
         return output_shape, (enc_params, dec_params)
 
-    def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Tuple[Array, Array, Dict[str, Array]]:
+    def apply_fn(params: Params, inputs: Any, rng: KeyArray, **kwargs: Any) -> ArrayTree:
         enc_params, dec_params = params
         x, z_c, y_c = inputs
         x = _rescale(x)
@@ -73,4 +74,4 @@ def c_vae(encoder: StaxLayer,
         return loss, recon, {'recon': recon, 'log_px': log_px, 'kl': kl, 'elbo': elbo,
                              'avg_mean_z': avg_mean_z, 'avg_scale_z': avg_scale_z, 'snr': snr}
 
-    return init_fn, apply_fn
+    return StaxLayer(init_fn, apply_fn)

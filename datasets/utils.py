@@ -1,17 +1,17 @@
 import itertools
 import warnings
-from typing import Callable, Dict, FrozenSet, Sequence, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Sequence, Tuple
 
 import numpy as np
 import tensorflow as tf
+from models.utils import ParentDist
 from more_itertools import powerset
 from numpy.typing import NDArray
+from staxplus import Shape
 from typing_extensions import Protocol
 
-from core import Shape
-from models.utils import ParentDist
-
 IMAGE = NDArray[np.uint8]
+Array = NDArray[Any]
 
 Scenario = Tuple[
     Dict[FrozenSet[str], tf.data.Dataset],
@@ -21,22 +21,8 @@ Scenario = Tuple[
 
 
 class ConfoundingFn(Protocol):
-    def __call__(self, dataset: tf.data.Dataset, confound: bool = True) -> Tuple[NDArray, Dict[str, NDArray]]:
-        pass
-
-
-def image_gallery(array: NDArray, ncols: int = 16, num_images_to_display: int = 128,
-                  decode_fn: Callable[[NDArray], NDArray] = lambda x: 127.5 * x + 127.5) -> NDArray:
-    array = np.clip(decode_fn(array), a_min=0, a_max=255) / 255.
-    array = array[::len(array) // num_images_to_display][:num_images_to_display]
-    nindex, height, width, intensity = array.shape
-    nrows = nindex // ncols + int(bool(nindex % ncols))
-    pad = np.zeros(shape=(nrows * ncols - nindex, height, width, intensity))
-    array = np.concatenate((array, pad), axis=0)
-    result = (array.reshape((nrows, ncols, height, width, intensity))
-              .swapaxes(1, 2)
-              .reshape(height * nrows, width * ncols, intensity))
-    return result
+    def __call__(self, dataset: tf.data.Dataset, confound: bool = True) -> Tuple[Array, Dict[str, Array]]:
+        ...
 
 
 def get_resample_fn(num_repeats: tf.Tensor, parent_names: Sequence[str]) \
@@ -48,7 +34,7 @@ def get_resample_fn(num_repeats: tf.Tensor, parent_names: Sequence[str]) \
     return resample_fn
 
 
-def _get_histogram(parents: Dict[str, NDArray], parent_dists: Dict[str, ParentDist], num_bins: int = 10) -> NDArray:
+def _get_histogram(parents: Dict[str, Array], parent_dists: Dict[str, ParentDist], num_bins: int = 10) -> Array:
     indicator = {}
     for (parent_name, parent_dist), parent in zip(parent_dists.items(), parents.values()):
         if parent_dist.is_discrete:
@@ -65,9 +51,9 @@ def _get_histogram(parents: Dict[str, NDArray], parent_dists: Dict[str, ParentDi
 
 
 def get_simulated_intervention_datasets(dataset: tf.data.Dataset,
-                                        parents: Dict[str, NDArray],
+                                        parents: Dict[str, Array],
                                         parent_dists: Dict[str, ParentDist],
-                                        num_bins: int = 10) -> Dict[FrozenSet, tf.data.Dataset]:
+                                        num_bins: int = 10) -> Dict[FrozenSet[str], tf.data.Dataset]:
     histogram = _get_histogram(parents, parent_dists, num_bins=num_bins)
     joint_dist = histogram / np.sum(histogram)
     if np.any(histogram == 0):
@@ -82,7 +68,7 @@ def get_simulated_intervention_datasets(dataset: tf.data.Dataset,
         product_of_marginals = np.ones(shape=(1,) * len(parents))
         for axis in axes:
             product_of_marginals = product_of_marginals \
-                                   * np.sum(joint_dist, axis=tuple(set(range(joint_dist.ndim)) - {axis}), keepdims=True)
+                * np.sum(joint_dist, axis=tuple(set(range(joint_dist.ndim)) - {axis}), keepdims=True)
         interventional_dist = product_of_marginals * np.sum(joint_dist, axis=axes, keepdims=True)
         weights = interventional_dist / histogram
         num_repeats = np.round(weights / np.min(weights[histogram > 0])).astype(int)

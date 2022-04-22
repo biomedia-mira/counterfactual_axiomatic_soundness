@@ -3,29 +3,29 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-import jax
 import jax.random as random
 import matplotlib.pyplot as plt
 import numpy as np
 import numpyro
 import tensorflow as tf
 import tensorflow_datasets as tfds
-from numpy.typing import NDArray
+from jax.tree_util import tree_map
+from models.utils import ParentDist
 from numpyro.distributions import Normal, TransformedDistribution
 from numpyro.distributions.transforms import AffineTransform, ComposeTransform, SigmoidTransform
 from skimage import morphology, transform
+from staxplus import Shape
 from tensorflow.keras import layers
 from tqdm import tqdm
 
-from core import Shape
 from datasets.morphomnist.morpho import ImageMorphology
-from datasets.utils import ConfoundingFn, get_simulated_intervention_datasets, IMAGE, image_gallery, Scenario
-from models.utils import ParentDist
+from datasets.utils import IMAGE, Array, ConfoundingFn, Scenario, get_simulated_intervention_datasets
+from utils import image_gallery
 
 
 def get_dataset(data_dir: Path, dataset_name: str, confound: bool, confounding_fn: ConfoundingFn) \
-        -> Tuple[NDArray, Dict[str, NDArray], NDArray, Dict[str, NDArray]]:
-    dataset_path = Path(f'{str(data_dir)}/{dataset_name}' + (f'_confounded' if confound else ''))
+        -> Tuple[Array, Dict[str, Array], Array, Dict[str, Array]]:
+    dataset_path = Path(f'{str(data_dir)}/{dataset_name}' + ('_confounded' if confound else ''))
     try:
         with open(dataset_path, 'rb') as f1:
             train_images, train_parents, test_images, test_parents, = pickle.load(f1)
@@ -40,7 +40,7 @@ def get_dataset(data_dir: Path, dataset_name: str, confound: bool, confounding_f
     return train_images, train_parents, test_images, test_parents
 
 
-def set_colour(image: IMAGE, colour: NDArray) -> IMAGE:
+def set_colour(image: IMAGE, colour: Array) -> IMAGE:
     return np.array(np.repeat(image, 3, axis=-1) * colour).astype(np.uint8)
 
 
@@ -79,7 +79,7 @@ def set_intensity(image: IMAGE, intensity: float) -> IMAGE:
 def thickness_intensity_model(confound: bool,
                               n_samples: Optional[int] = None,
                               scale: float = 0.5,
-                              invert: bool = False) -> Tuple[NDArray, NDArray]:
+                              invert: bool = False) -> Tuple[Array, Array]:
     with numpyro.plate('observations', n_samples):
         k1, k2, k3 = random.split(random.PRNGKey(1), 3)
         thickness_transform = ComposeTransform(
@@ -96,8 +96,8 @@ def thickness_intensity_model(confound: bool,
 
 
 def digit_thickness_intensity(data_dir: Path, confound: bool) \
-        -> Tuple[NDArray, Dict[str, NDArray], NDArray, Dict[str, NDArray], Dict[str, ParentDist], Shape]:
-    def confounding_fn(dataset: tf.data.Dataset, confound: bool = True) -> Tuple[NDArray, Dict[str, NDArray]]:
+        -> Tuple[Array, Dict[str, Array], Array, Dict[str, Array], Dict[str, ParentDist], Shape]:
+    def confounding_fn(dataset: tf.data.Dataset, confound: bool = True) -> Tuple[Array, Dict[str, Array]]:
         digit = np.array([digit for _, digit in iter(dataset)])
         thickness, intensity = thickness_intensity_model(confound=confound, n_samples=len(dataset))
         images = np.array([set_intensity(set_thickness(image, t), i)
@@ -144,13 +144,13 @@ def confounded_mnist(data_dir: Path, dataset_name: str, confound: bool, plot: bo
         image = layers.RandomZoom(height_factor=.2, width_factor=.2, fill_mode='constant', fill_value=0.)(image)
         return image, parents
 
-    train_data = jax.tree_map(lambda ds: ds.map(augment).map(encode), train_data_dict)
+    train_data = tree_map(lambda ds: ds.map(augment).map(encode), train_data_dict)
     test_data = test_dataset.map(encode)
 
     if plot:
         for key, dataset in train_data_dict.items():
             show_images(dataset, f'train set {str(key)}')
-        show_images(test_data, f'test set')
+        show_images(test_data, 'test set')
 
     return train_data, test_data, parent_dists, input_shape
 

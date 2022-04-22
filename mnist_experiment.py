@@ -1,15 +1,16 @@
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast, List
+from typing import List, cast
 
 import optax
 import tensorflow as tf
-from jax.example_libraries.stax import Conv, Dense, FanInConcat, FanOut, Flatten, LeakyRelu, parallel, serial, Tanh
+from jax.example_libraries.stax import (Conv, Dense, FanInConcat, FanOut, Flatten, Identity, LeakyRelu, Tanh, parallel,
+                                        serial)
 
-from core.staxplus import Pass, Reshape, Resize, StaxLayer
+from staxplus import Reshape, Resize, StaxLayer
 from datasets.confounded_mnist import confounded_mnist
-from experiment import get_baseline, get_discriminative_models, get_mechanisms, TrainConfig
+from experiment import TrainConfig, get_baseline, get_discriminative_models, get_mechanisms
 from identifiability_tests import evaluate, print_test_results
 
 tf.config.experimental.set_visible_devices([], 'GPU')
@@ -45,7 +46,7 @@ decoder_layers = \
 
 # Conditional VAE baseline
 latent_dim = 16
-vae_encoder = serial(parallel(serial(*encoder_layers), Pass), FanInConcat(axis=-1),
+vae_encoder = serial(parallel(serial(*encoder_layers), Identity), FanInConcat(axis=-1),
                      Dense(hidden_dim), LeakyRelu,
                      FanOut(2), parallel(Dense(latent_dim), Dense(latent_dim)))
 vae_decoder = serial(FanInConcat(axis=-1), *decoder_layers)
@@ -63,7 +64,7 @@ critic = serial(parallel(
     Dense(hidden_dim), LeakyRelu),
     FanInConcat(-1), Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu)
 
-mechanism = serial(parallel(serial(*encoder_layers), Pass, Pass), FanInConcat(-1),
+mechanism = serial(parallel(serial(*encoder_layers), Identity, Identity), FanInConcat(-1),
                    Dense(hidden_dim), LeakyRelu, *decoder_layers, Tanh)
 
 mechanism_optimizer = optax.chain(optax.adam(learning_rate=1e-4, b1=0.0, b2=.9),
@@ -163,15 +164,6 @@ if __name__ == '__main__':
     parser.add_argument('--seeds', dest='seeds', nargs="+", type=int, help='list of random seeds')
 
     args = parser.parse_args()
-    # configs = [
-    #     Config(baseline=True, partial_mechanisms=False, constraint_function_power=1, confound=True, de_confound=True),
-    #     Config(baseline=True, partial_mechanisms=False, constraint_function_power=1, confound=False, de_confound=False),
-    #     Config(baseline=False, partial_mechanisms=True, constraint_function_power=1, confound=True, de_confound=True),
-    #     Config(baseline=False, partial_mechanisms=True, constraint_function_power=1, confound=False, de_confound=False),
-    #     Config(baseline=False, partial_mechanisms=False, constraint_function_power=1, confound=True, de_confound=True),
-    #     Config(baseline=False, partial_mechanisms=False, constraint_function_power=1, confound=False, de_confound=False)
-    # ]
-    #
 
     configs = [
         Config(baseline=False, partial_mechanisms=False, constraint_function_power=1, confound=True),
