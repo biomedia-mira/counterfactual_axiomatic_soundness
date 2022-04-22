@@ -2,14 +2,12 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 import jax.numpy as jnp
 import optax
-from staxplus import (Array, ArrayTree, GradientTransformation, KeyArray, Model,
-                  OptState, Params, Shape, StaxLayer)
-from staxplus.f_gan import f_gan
 from jax import value_and_grad, vmap
 from jax.tree_util import tree_map
+from staxplus import Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, Shape, StaxLayer
+from staxplus.f_gan import f_gan
 
-from models.utils import (DiscriminativeFn, MechanismFn, ParentDist,
-                          concat_parents, sample_through_shuffling)
+from models.utils import DiscriminativeFn, MechanismFn, ParentDist, concat_parents, sample_through_shuffling
 
 
 def l2(x: Array) -> Array:
@@ -41,9 +39,9 @@ def functional_counterfactual(do_parent_name: str,
 
     def init_fn(rng: KeyArray, input_shape: Shape) -> Params:
         c_shape = (-1, sum(parent_dims.values()))
-        f_div_output_shape, f_div_params = divergence_init_fn(rng, (input_shape, c_shape))
+        _, f_div_params = divergence_init_fn(rng, (input_shape, c_shape))
         c_shape = (-1, sum([dim for p_name, dim in parent_dims.items() if p_name in do_parent_names]))
-        mechanism_output_shape, mechanism_params = mechanism_init_fn(rng, (input_shape, c_shape, c_shape))
+        _, mechanism_params = mechanism_init_fn(rng, (input_shape, c_shape, c_shape))
         return f_div_params, mechanism_params
 
     def parents_to_array(parents: Dict[str, Array]) -> Array:

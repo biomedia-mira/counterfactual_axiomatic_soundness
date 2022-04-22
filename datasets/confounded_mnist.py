@@ -110,9 +110,21 @@ def digit_thickness_intensity(data_dir: Path, confound: bool) \
         = get_dataset(data_dir, dataset_name, confound, confounding_fn)
 
     parent_dists \
-        = {'digit': ParentDist(name='digit', dim=10, is_discrete=True, is_invertible=False, samples=train_parents['digit']),
-           'thickness': ParentDist(name='thickness', dim=1, is_discrete=False, is_invertible=True, samples=train_parents['thickness']),
-           'intensity': ParentDist(name='intensity', dim=1, is_discrete=False, is_invertible=True, samples=train_parents['intensity'])}
+        = {'digit': ParentDist(name='digit',
+                               dim=10,
+                               is_discrete=True,
+                               is_invertible=False,
+                               samples=train_parents['digit']),
+           'thickness': ParentDist(name='thickness',
+                                   dim=1,
+                                   is_discrete=False,
+                                   is_invertible=True,
+                                   samples=train_parents['thickness']),
+           'intensity': ParentDist(name='intensity',
+                                   dim=1,
+                                   is_discrete=False,
+                                   is_invertible=True,
+                                   samples=train_parents['intensity'])}
     input_shape = (-1, 28, 28, 1)
 
     return train_images, train_parents, test_images, test_parents, parent_dists, input_shape

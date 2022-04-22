@@ -113,7 +113,7 @@ def reversibility_test(mechanism_fn: MechanismFn,
         do_parent_cycle = jnp.concatenate([do_parent_cycle] * num_cycles, axis=0)
         image_sequence = [image]
         do_image = image
-        for do_parent in do_parent_cycle:
+        for do_parent in list(do_parent_cycle):
             do_parents = {**parents, parent_name: do_parent}
             do_image = mechanism_fn(rng, do_image, parents, do_parents)
             image_sequence.append(do_image)

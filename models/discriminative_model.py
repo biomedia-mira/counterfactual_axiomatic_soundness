@@ -1,19 +1,19 @@
-from typing import Callable, Sequence, Tuple, cast
+from typing import Callable, Tuple, cast
 
 import jax.numpy as jnp
 import optax
-from staxplus import Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, ShapeTree, StaxLayer
 from jax import value_and_grad
 from jax.example_libraries import stax
 from jax.example_libraries.stax import Dense, Flatten
 from jax.nn import log_softmax
+from staxplus import Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, ShapeTree, StaxLayer
 
 from models.utils import DiscriminativeFn, ParentDist
 
 
-def discriminative_model(parent_dist: ParentDist, layers: Sequence[StaxLayer]) \
+def discriminative_model(parent_dist: ParentDist, backbone: StaxLayer) \
         -> Tuple[Model, Callable[[Params], DiscriminativeFn]]:
-    _init_fn, _apply_fn = stax.serial(*layers, Flatten, Dense(parent_dist.dim))
+    _init_fn, _apply_fn = stax.serial(backbone, Flatten, Dense(parent_dist.dim))
 
     def init_fn(rng: KeyArray, input_shape: ShapeTree) -> Params:
         return _init_fn(rng, input_shape)[1]

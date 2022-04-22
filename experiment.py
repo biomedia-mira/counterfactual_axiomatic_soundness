@@ -48,13 +48,13 @@ class TrainConfig:
 def get_discriminative_models(job_dir: Path,
                               seed: int,
                               scenario: Scenario,
-                              layers: Sequence[StaxLayer],
+                              backbone: StaxLayer,
                               train_config: TrainConfig,
                               overwrite: bool) -> Dict[str, DiscriminativeFn]:
     train_datasets, test_dataset, parent_dists, input_shape = scenario
     discriminative_models: Dict[str, DiscriminativeFn] = {}
     for parent_name, parent_dist in parent_dists.items():
-        model, get_discriminative_fn = discriminative_model(parent_dist, layers=layers)
+        model, get_discriminative_fn = discriminative_model(parent_dist, backbone=backbone)
         target_dist = frozenset((parent_name,))
 
         def select_parent(image: Array, parents: Dict[str, Array]) -> Tuple[Array, Array]:
@@ -117,7 +117,7 @@ def get_mechanisms(job_dir: Path,
                    scenario: Scenario,
                    partial_mechanisms: bool,
                    constraint_function_power: int,
-                   classifier_layers: Sequence[StaxLayer],
+                   discriminative_backbone: StaxLayer,
                    classifier_train_config: TrainConfig,
                    critic: StaxLayer,
                    mechanism: StaxLayer,
@@ -126,9 +126,12 @@ def get_mechanisms(job_dir: Path,
                    overwrite: bool) -> Dict[str, MechanismFn]:
     train_datasets, test_dataset, parent_dists, input_shape = scenario
     parent_names = list(parent_dists.keys())
-    classifiers \
-        = get_discriminative_models(job_dir / 'classifiers', seed, scenario, classifier_layers, classifier_train_config,
-                                    overwrite)
+    classifiers = get_discriminative_models(job_dir / 'classifiers',
+                                            seed,
+                                            scenario,
+                                            discriminative_backbone,
+                                            classifier_train_config,
+                                            overwrite)
     mechanisms: Dict[str, MechanismFn] = {}
     for parent_name in (parent_names if partial_mechanisms else ['all']):
         model, get_mechanism_fn = functional_counterfactual(do_parent_name=parent_name,

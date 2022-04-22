@@ -8,35 +8,37 @@ import tensorflow as tf
 from jax.example_libraries.stax import (Conv, Dense, FanInConcat, FanOut, Flatten, Identity, LeakyRelu, Tanh, parallel,
                                         serial)
 
-from staxplus import Reshape, Resize, StaxLayer
 from datasets.confounded_mnist import confounded_mnist
 from experiment import TrainConfig, get_baseline, get_discriminative_models, get_mechanisms
 from identifiability_tests import evaluate, print_test_results
+from staxplus import Reshape, Resize, StaxLayer
 
 tf.config.experimental.set_visible_devices([], 'GPU')
 
 hidden_dim = 256
 n_channels = hidden_dim // 4
 
-# Classifiers
-classifier_layers = \
-    (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-     Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-     Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-     cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu)
+# Discriminative model layers
+discriminative_backbone = cast(StaxLayer,
+                               serial(
+                                   Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+                                   Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+                                   Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+                                   Flatten,
+                                   Dense(hidden_dim), LeakyRelu,
+                                   Dense(hidden_dim), LeakyRelu))
 
-classifier_train_config = TrainConfig(batch_size=1024,
-                                      optimizer=optax.adam(learning_rate=5e-4, b1=0.9),
-                                      num_steps=2000,
-                                      log_every=100,
-                                      eval_every=50,
-                                      save_every=50)
+discriminative_train_config = TrainConfig(batch_size=1024,
+                                          optimizer=optax.adam(learning_rate=5e-4, b1=0.9),
+                                          num_steps=2000,
+                                          log_every=100,
+                                          eval_every=50,
+                                          save_every=50)
 
 # General encoder/decoder
-encoder_layers = \
-    (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-     Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-     cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
+encoder_layers = (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+                  Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+                  cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
 
 decoder_layers = \
     (Dense(hidden_dim), LeakyRelu, Dense(7 * 7 * n_channels), LeakyRelu, Reshape((-1, 7, 7, n_channels)),
@@ -46,10 +48,10 @@ decoder_layers = \
 
 # Conditional VAE baseline
 latent_dim = 16
-vae_encoder = serial(parallel(serial(*encoder_layers), Identity), FanInConcat(axis=-1),
-                     Dense(hidden_dim), LeakyRelu,
-                     FanOut(2), parallel(Dense(latent_dim), Dense(latent_dim)))
-vae_decoder = serial(FanInConcat(axis=-1), *decoder_layers)
+vae_encoder = cast(StaxLayer, serial(parallel(serial(*encoder_layers), Identity), FanInConcat(axis=-1),
+                                     Dense(hidden_dim), LeakyRelu,
+                                     FanOut(2), parallel(Dense(latent_dim), Dense(latent_dim))))
+vae_decoder = cast(StaxLayer, serial(FanInConcat(axis=-1), *decoder_layers))
 baseline_train_config = TrainConfig(batch_size=512,
                                     optimizer=optax.adam(learning_rate=1e-3),
                                     num_steps=10000,
@@ -57,15 +59,28 @@ baseline_train_config = TrainConfig(batch_size=512,
                                     eval_every=250,
                                     save_every=250)
 
-critic = serial(parallel(
-    serial(Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-           Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-           Flatten, Dense(hidden_dim), LeakyRelu),
-    Dense(hidden_dim), LeakyRelu),
-    FanInConcat(-1), Dense(hidden_dim), LeakyRelu, Dense(hidden_dim), LeakyRelu)
+critic = cast(StaxLayer,
+              serial(
+                  parallel(
+                      serial(Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'),
+                             LeakyRelu,
+                             Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'),
+                             LeakyRelu, Flatten, Dense(hidden_dim), LeakyRelu),
+                      serial(Dense(hidden_dim), LeakyRelu)
+                  ),
+                  FanInConcat(-1),
+                  Dense(hidden_dim), LeakyRelu,
+                  Dense(hidden_dim), LeakyRelu))
 
-mechanism = serial(parallel(serial(*encoder_layers), Identity, Identity), FanInConcat(-1),
-                   Dense(hidden_dim), LeakyRelu, *decoder_layers, Tanh)
+mechanism = cast(StaxLayer,
+                 serial(
+                     parallel(
+                         serial(*encoder_layers),
+                         Identity,
+                         Identity),
+                     FanInConcat(-1),
+                     Dense(hidden_dim), LeakyRelu,
+                     *decoder_layers, Tanh))
 
 mechanism_optimizer = optax.chain(optax.adam(learning_rate=1e-4, b1=0.0, b2=.9),
                                   optax.adaptive_grad_clip(clipping=0.01))
@@ -95,17 +110,16 @@ def run_experiment(job_dir: Path,
 
     scenario_unconfounded = confounded_mnist(data_dir, scenario_name, confound=False)
     scenario = confounded_mnist(data_dir, scenario_name, confound=confound)
-    train_datasets, test_dataset, parent_dists, input_shape = scenario
-
+    _, test_data, parent_dists, _ = scenario
     # get pseudo oracles
     pseudo_oracles = get_discriminative_models(job_dir=pseudo_oracle_dir,
                                                seed=368392,
                                                scenario=scenario_unconfounded,
-                                               layers=classifier_layers,
-                                               train_config=classifier_train_config,
+                                               backbone=discriminative_backbone,
+                                               train_config=discriminative_train_config,
                                                overwrite=False)
 
-    # ood_test_sets = {'kmnist': get_coloured_kmnist(data_dir, True)} if scenario_name == 'digit_colour_scenario' else {}
+    # ood_test_sets= {'kmnist': get_coloured_kmnist(data_dir, True)} if scenario_name == 'digit_colour_scenario' else {}
     ood_test_sets = {}
     ood_results = {key: [] for key in ood_test_sets.keys()}
     results = []
@@ -126,18 +140,17 @@ def run_experiment(job_dir: Path,
                                         scenario=scenario,
                                         partial_mechanisms=partial_mechanisms,
                                         constraint_function_power=constraint_function_power,
-                                        classifier_layers=classifier_layers,
-                                        classifier_train_config=classifier_train_config,
+                                        discriminative_backbone=discriminative_backbone,
+                                        classifier_train_config=discriminative_train_config,
                                         critic=critic,
                                         mechanism=mechanism,
                                         train_config=mechanism_train_config,
                                         from_joint=from_joint,
                                         overwrite=overwrite)
 
-        results.append(evaluate(seed_dir, mechanisms, is_invertible, pseudo_oracles, test_dataset,
-                                overwrite=overwrite))
+        results.append(evaluate(seed_dir, parent_dists, mechanisms, pseudo_oracles, test_data, overwrite=overwrite))
         for key, ood_test_set in ood_test_sets.items():
-            ood_results[key].append(evaluate(seed_dir / 'ood', mechanisms, is_invertible, pseudo_oracles,
+            ood_results[key].append(evaluate(seed_dir / 'ood', parent_dists, mechanisms, pseudo_oracles,
                                              ood_test_set, overwrite=overwrite))
 
     print(job_name)
