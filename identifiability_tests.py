@@ -13,9 +13,9 @@ from jax.tree_util import tree_flatten, tree_unflatten
 from numpy.typing import NDArray
 
 from core import Array, KeyArray
-from models import ClassifierFn, MarginalDistribution, MechanismFn
-from core.utils import flatten_nested_dict
+from core import flatten_nested_dict
 from experiment import to_numpy_iterator
+from models.utils import DiscriminativeFn, MechanismFn, ParentDist
 
 TestResult = Dict[str, Union['TestResult', NDArray]]
 Test = Callable[[KeyArray, Array, Dict[str, Array]], Tuple[TestResult, NDArray]]
@@ -51,24 +51,25 @@ def plot_and_save(image: NDArray, path: Path) -> None:
 
 
 def effectiveness_test(mechanism_fn: MechanismFn,
-                       parent_name: str,
-                       marginal: MarginalDistribution,
-                       pseudo_oracles: Dict[str, ClassifierFn],
+                       parent_dist: ParentDist,
+                       pseudo_oracles: Dict[str, DiscriminativeFn],
                        _decode_fn: Callable[[NDArray], NDArray] = decode_fn,
                        plot_cases_per_row: int = 3,
                        sep_width: int = 1) -> Test:
+    parent_name = parent_dist.name
+
     def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, NDArray]:
-        do_parent = marginal.sample(rng, (image.shape[0],))
+        do_parent = parent_dist.sample(rng, (image.shape[0],))
         do_parents = {**parents, parent_name: do_parent}
         do_image = mechanism_fn(rng, image, parents, do_parents)
         output = {}
         for _parent_name, _parent in do_parents.items():
-            _, output[_parent_name] = pseudo_oracles[_parent_name]((do_image, _parent))
+            _, output[_parent_name] = pseudo_oracles[_parent_name](image=do_image, parent=_parent)
         test_results = jax.tree_map(np.array, output)
         do_nothing = mechanism_fn(rng, image, parents, parents)
 
         # plot
-        nrows, ncols = marginal.marginal_dist.shape[0], 3 * plot_cases_per_row
+        nrows, ncols = 10, 3 * plot_cases_per_row
         height, width, channels = image.shape[1:]
         im = _decode_fn(np.stack((image, do_nothing, do_image), axis=1))
         _parents, _do_parents = np.argmax(parents[parent_name], axis=-1), np.argmax(do_parents[parent_name], axis=-1)
@@ -104,12 +105,13 @@ def composition_test(mechanism_fn: MechanismFn,
 
 
 def reversibility_test(mechanism_fn: MechanismFn,
-                       parent_name: str,
-                       marginal: MarginalDistribution,
+                       parent_dist: ParentDist,
                        cycle_length: int = 2,
                        num_cycles: int = 1) -> Test:
+    parent_name = parent_dist.name
+
     def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, NDArray]:
-        do_parent_cycle = marginal.sample(rng, (cycle_length - 1, image.shape[0]))
+        do_parent_cycle = parent_dist.sample(rng, (cycle_length - 1, image.shape[0]))
         do_parent_cycle = jnp.concatenate((do_parent_cycle, parents[parent_name][jnp.newaxis]))
         do_parent_cycle = jnp.concatenate([do_parent_cycle] * num_cycles, axis=0)
         image_sequence = [image]
@@ -127,20 +129,18 @@ def reversibility_test(mechanism_fn: MechanismFn,
 
 
 def commutativity_test(mechanism_fns: Dict[str, MechanismFn],
-                       marginals: Dict[str, MarginalDistribution],
-                       parent_name_1: str,
-                       parent_name_2: str,
+                       parent_dist_1: ParentDist,
+                       parent_dist_2: ParentDist,
                        sep_width: int = 1, ) -> Test:
     def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, NDArray]:
 
         image_sequence = []
-        for parent_order in itertools.permutations((parent_name_1, parent_name_2)):
+        for parent_order in itertools.permutations((parent_dist_1, parent_dist_2)):
             _image, _parents = image, parents
             image_sequence.append(image)
-            for parent_name in parent_order:
-                mechanism_fn = mechanism_fns[parent_name]
-                marginal = marginals[parent_name]
-                _do_parents = {**_parents, parent_name: marginal.sample(rng, (image.shape[0],))}
+            for parent_dist in parent_order:
+                mechanism_fn = mechanism_fns[parent_dist.name]
+                _do_parents = {**_parents, parent_dist.name: parent_dist.sample(rng, (image.shape[0],))}
                 _image = mechanism_fn(rng, _image, _parents, _do_parents)
                 _parents = _do_parents
                 image_sequence.append(_image)
@@ -172,10 +172,9 @@ def print_test_results(trees: Iterable[Any]) -> None:
 
 
 def evaluate(job_dir: Path,
+             parent_dists: Dict[str, ParentDist],
              mechanism_fns: Dict[str, MechanismFn],
-             is_invertible: Dict[str, bool],
-             marginals: Dict[str, MarginalDistribution],
-             pseudo_oracles: Dict[str, ClassifierFn],
+             pseudo_oracles: Dict[str, DiscriminativeFn],
              test_set: tf.data.Dataset,
              num_batches_to_plot: int = 1,
              overwrite: bool = False) -> TestResult:
@@ -184,18 +183,18 @@ def evaluate(job_dir: Path,
         with open(results_path, mode='rb') as f:
             return pickle.load(f)
 
-    assert pseudo_oracles.keys() == is_invertible.keys() == marginals.keys()
-    parent_names = marginals.keys()
+    assert pseudo_oracles.keys() == parent_dists.keys()
+    parent_names = parent_dists.keys()
     tests = {}
-    for parent_name, marginal in marginals.items():
+    for parent_name, parent_dist in parent_dists.items():
         tests[parent_name] = {}
         mechanism_fn = mechanism_fns[parent_name]
-        tests[parent_name]['effectiveness'] = effectiveness_test(mechanism_fn, parent_name, marginal, pseudo_oracles)
+        tests[parent_name]['effectiveness'] = effectiveness_test(mechanism_fn, parent_dist, pseudo_oracles)
         tests[parent_name]['composition'] = composition_test(mechanism_fn)
-        if is_invertible[parent_name]:
-            tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_name, marginal, num_cycles=5)
-    for p1, p2 in itertools.combinations(parent_names, 2):
-        tests[f'{p1}_{p2}_commutativity'] = commutativity_test(mechanism_fns, marginals, p1, p2)
+        if parent_dist.is_invertible:
+            tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_dist, num_cycles=5)
+    for p1, p2 in itertools.combinations(parent_dists, 2):
+        tests[f'{p1}_{p2}_commutativity'] = commutativity_test(mechanism_fns, p1, p2)
 
     rng = random.PRNGKey(0)
     results: TestResult = {}

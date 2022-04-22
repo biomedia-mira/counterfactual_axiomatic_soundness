@@ -1,13 +1,13 @@
 from typing import Any, Callable, Dict, Optional, Tuple
 
+import jax
 import jax.numpy as jnp
 import optax
 from jax import tree_map, value_and_grad, vmap
 
-from core import Array, GradientTransformation, KeyArray, Model, OptState, Params, Shape, StaxLayer
+from core import Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, Shape, StaxLayer
 from core.staxplus.f_gan import f_gan
-from models.utils import ClassifierFn, MechanismFn
-from models.utils import concat_parents, sample_through_shuffling
+from models.utils import concat_parents, DiscriminativeFn, MechanismFn, ParentDist, sample_through_shuffling
 
 
 def l2(x: Array) -> Array:
@@ -16,33 +16,33 @@ def l2(x: Array) -> Array:
 
 # If do_parent_name =='all' uses full mechanism else uses partial mechanism
 def functional_counterfactual(do_parent_name: str,
-                              parent_dims: Dict[str, int],
-                              classifiers: Dict[str, ClassifierFn],
+                              parent_dists: Dict[str, ParentDist],
+                              classifiers: Dict[str, DiscriminativeFn],
                               critic: StaxLayer,
                               mechanism: StaxLayer,
-                              is_invertible: Dict[str, bool],
                               constraint_function_power: int = 1,
                               from_joint: bool = True) -> Tuple[Model, Callable[[Params], MechanismFn]]:
     """
     Behaves like a partial mechanism if the set of do_parent_names is smaller than parent_dims.keys()
     """
+    parent_dims = jax.tree_map(lambda x: x.dim, parent_dists)
     assert len(parent_dims) > 0
-    assert do_parent_name in ['all', *parent_dims.keys()]
-    assert parent_dims.keys() == classifiers.keys() == is_invertible.keys()
+    assert do_parent_name in ['all', *parent_dists.keys()]
+    assert parent_dims.keys() == classifiers.keys()
     assert constraint_function_power >= 1
     do_parent_names = tuple(parent_dims.keys()) if do_parent_name == 'all' else (do_parent_name,)
     source_dist = frozenset() if from_joint else frozenset(parent_dims.keys())
     target_dist = frozenset(do_parent_names) if from_joint else frozenset(parent_dims.keys())
     divergence_init_fn, divergence_apply_fn = f_gan(critic=critic, mode='gan', trick_g=True)
     mechanism_init_fn, mechanism_apply_fn = mechanism
-    _is_invertible = all([is_invertible[parent_name] for parent_name in do_parent_names])
+    _is_invertible = all([parent_dists[parent_name].is_invertible for parent_name in do_parent_names])
 
-    def init_fn(rng: KeyArray, input_shape: Shape) -> Tuple[Shape, Params]:
+    def init_fn(rng: KeyArray, input_shape: Shape) -> Params:
         c_shape = (-1, sum(parent_dims.values()))
         f_div_output_shape, f_div_params = divergence_init_fn(rng, (input_shape, c_shape))
         c_shape = (-1, sum([dim for p_name, dim in parent_dims.items() if p_name in do_parent_names]))
         mechanism_output_shape, mechanism_params = mechanism_init_fn(rng, (input_shape, c_shape, c_shape))
-        return mechanism_output_shape, (f_div_params, mechanism_params)
+        return f_div_params, mechanism_params
 
     def parents_to_array(parents: Dict[str, Array]) -> Array:
         return concat_parents({p_name: array for p_name, array in parents.items() if p_name in do_parent_names})
@@ -50,7 +50,7 @@ def functional_counterfactual(do_parent_name: str,
     def apply_mechanism(params: Params, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
         return mechanism_apply_fn(params, (image, parents_to_array(parents), parents_to_array(do_parents)))
 
-    def apply_fn(params: Params, inputs: Any, rng: KeyArray) -> Tuple[Array, Any]:
+    def apply_fn(params: Params, rng: KeyArray, inputs: ArrayTree) -> Tuple[Array, ArrayTree]:
         divergence_params, mechanism_params = params
         (image, parents) = inputs[source_dist]
 
@@ -93,8 +93,11 @@ def functional_counterfactual(do_parent_name: str,
 
         return loss, {'loss': loss[jnp.newaxis], **output}
 
-    def update(params: Params, optimizer: GradientTransformation, opt_state: OptState, inputs: Any, rng: KeyArray) \
-            -> Tuple[Params, OptState, Array, Any]:
+    def update_fn(params: Params,
+                  optimizer: GradientTransformation,
+                  opt_state: OptState,
+                  rng: KeyArray,
+                  inputs: Any) -> Tuple[Params, OptState, Array, Any]:
         zero_grads = tree_map(lambda x: jnp.zeros_like(x), params)
         # step discriminator
         (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(params, inputs, rng)
@@ -113,4 +116,4 @@ def functional_counterfactual(do_parent_name: str,
 
         return mechanism_fn
 
-    return (init_fn, apply_fn, update), get_mechanism_fn
+    return Model(init_fn, apply_fn, update_fn), get_mechanism_fn

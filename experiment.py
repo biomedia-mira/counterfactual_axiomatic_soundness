@@ -1,37 +1,22 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from typing import Callable
 from typing import Dict, FrozenSet, Iterable, Sequence, Tuple
 
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-from core import GradientTransformation, Params, StaxLayer
+from core import GradientTransformation, StaxLayer
 from core.train import train
-from models import classifier, ClassifierFn, conditional_vae, functional_counterfactual, MechanismFn
+from datasets.utils import Scenario
+from models.conditional_vae import conditional_vae
+from models.discriminative_model import discriminative_model
+from models.functional_counterfactual import functional_counterfactual
+from models.utils import DiscriminativeFn, MechanismFn
 
 
 def to_numpy_iterator(data: tf.data.Dataset, batch_size: int, drop_remainder: bool = True) -> Any:
     return tfds.as_numpy(data.batch(batch_size, drop_remainder=drop_remainder).prefetch(tf.data.AUTOTUNE))
-
-
-def compile_fn(fn: Callable, params: Params) -> Callable:
-    def _fn(*args: Any, **kwargs: Any) -> Any:
-        return fn(params, *args, **kwargs)
-
-    return _fn
-
-
-def prep_classifier_data(parent_name: str,
-                         train_datasets: Dict[FrozenSet[str], tf.data.Dataset],
-                         test_dataset: tf.data.Dataset,
-                         batch_size: int) -> Tuple[Iterable, Iterable]:
-    target_dist = frozenset((parent_name,))
-    select_parent = lambda image, parents: (image, parents[parent_name])
-    train_data = to_numpy_iterator(train_datasets[target_dist].map(select_parent), batch_size=batch_size)
-    test_data = to_numpy_iterator(test_dataset.map(select_parent), batch_size=batch_size, drop_remainder=True)
-    return train_data, test_data
 
 
 def prep_mechanism_data(do_parent_name: str,
@@ -61,17 +46,22 @@ class TrainConfig:
     save_every: int
 
 
-def get_classifiers(job_dir: Path,
-                    seed: int,
-                    scenario: Scenario,
-                    classifier_layers: Sequence[StaxLayer],
-                    train_config: TrainConfig,
-                    overwrite: bool) -> Dict[str, ClassifierFn]:
-    train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
-    classifiers: Dict[str, ClassifierFn] = {}
-    for parent_name, parent_dim in parent_dims.items():
-        model = classifier(num_classes=parent_dims[parent_name], layers=classifier_layers)
-        train_data, test_data = prep_classifier_data(parent_name, train_datasets, test_dataset, train_config.batch_size)
+def get_discriminative_models(job_dir: Path,
+                              seed: int,
+                              scenario: Scenario,
+                              layers: Sequence[StaxLayer],
+                              train_config: TrainConfig,
+                              overwrite: bool) -> Dict[str, DiscriminativeFn]:
+    train_datasets, test_dataset, parent_dists, input_shape = scenario
+    discriminative_models: Dict[str, DiscriminativeFn] = {}
+    for parent_name, parent_dist in parent_dists.items():
+        model, get_discriminative_fn = discriminative_model(parent_dist, layers=layers)
+        target_dist = frozenset((parent_name,))
+        select_parent = lambda image, parents: (image, parents[parent_name])
+        train_data = to_numpy_iterator(train_datasets[target_dist].map(select_parent),
+                                       batch_size=train_config.batch_size)
+        test_data = to_numpy_iterator(test_dataset.map(select_parent), batch_size=train_config.batch_size,
+                                      drop_remainder=True)
         params = train(model=model,
                        job_dir=job_dir / parent_name,
                        seed=seed,
@@ -84,8 +74,8 @@ def get_classifiers(job_dir: Path,
                        eval_every=train_config.eval_every,
                        save_every=train_config.save_every,
                        overwrite=overwrite)
-        classifiers[parent_name] = compile_fn(fn=model[1], params=params)
-    return classifiers
+        discriminative_models[parent_name] = get_discriminative_fn(params)
+    return discriminative_models
 
 
 def get_baseline(job_dir: Path,
@@ -96,11 +86,10 @@ def get_baseline(job_dir: Path,
                  train_config: TrainConfig,
                  from_joint: bool,
                  overwrite: bool) -> Dict[str, MechanismFn]:
-    train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
-    parent_names = list(parent_dims.keys())
+    train_datasets, test_dataset, parent_dists, input_shape = scenario
+    parent_names = list(parent_dists.keys())
     parent_name = 'all'
-    model, get_mechanism_fn = conditional_vae(parent_dims=parent_dims,
-                                              marginal_dists=marginals,
+    model, get_mechanism_fn = conditional_vae(parent_dists=parent_dists,
                                               vae_encoder=vae_encoder,
                                               vae_decoder=vae_decoder,
                                               from_joint=from_joint)
@@ -134,20 +123,18 @@ def get_mechanisms(job_dir: Path,
                    train_config: TrainConfig,
                    from_joint: bool,
                    overwrite: bool) -> Dict[str, MechanismFn]:
-    train_datasets, test_dataset, parent_dims, is_invertible, marginals, input_shape = scenario
-    parent_names = list(parent_dims.keys())
+    train_datasets, test_dataset, parent_dists, input_shape = scenario
+    parent_names = list(parent_dists.keys())
     classifiers \
-        = get_classifiers(job_dir / 'classifiers', seed, scenario, classifier_layers, classifier_train_config,
-                          overwrite)
+        = get_discriminative_models(job_dir / 'classifiers', seed, scenario, classifier_layers, classifier_train_config,
+                                    overwrite)
     mechanisms: Dict[str, MechanismFn] = {}
     for parent_name in (parent_names if partial_mechanisms else ['all']):
         model, get_mechanism_fn = functional_counterfactual(do_parent_name=parent_name,
-                                                            parent_dims=parent_dims,
-                                                            marginal_dists=marginals,
+                                                            parent_dists=parent_dists,
                                                             classifiers=classifiers,
                                                             critic=critic,
                                                             mechanism=mechanism,
-                                                            is_invertible=is_invertible,
                                                             constraint_function_power=constraint_function_power,
                                                             from_joint=from_joint)
         train_data, test_data = prep_mechanism_data(parent_name, parent_names, from_joint, train_datasets,

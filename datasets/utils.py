@@ -1,29 +1,28 @@
 import itertools
 import warnings
-from dataclasses import dataclass
 from typing import Callable, Dict, FrozenSet, Sequence, Tuple
 
 import numpy as np
 import tensorflow as tf
 from more_itertools import powerset
 from numpy.typing import NDArray
+from typing_extensions import Protocol
 
 from core import Shape
+from models.utils import ParentDist
 
 IMAGE = NDArray[np.uint8]
 
 Scenario = Tuple[
     Dict[FrozenSet[str], tf.data.Dataset],
-    tf.data.Dataset, Dict[str, int],
-    Dict[str, bool],
+    tf.data.Dataset,
+    Dict[str, ParentDist],
     Shape]
 
 
-@dataclass(frozen=True)
-class ParentDist:
-    dim: int
-    is_discrete: bool
-    is_invertible: bool
+class ConfoundingFn(Protocol):
+    def __call__(self, dataset: tf.data.Dataset, confound: bool = True) -> Tuple[NDArray, Dict[str, NDArray]]:
+        pass
 
 
 def image_gallery(array: NDArray, ncols: int = 16, num_images_to_display: int = 128,
@@ -49,18 +48,18 @@ def get_resample_fn(num_repeats: tf.Tensor, parent_names: Sequence[str]) \
     return resample_fn
 
 
-def _get_histogram(parents: Dict[str, NDArray], parent_dists: Dict[str, ParentDist], num_bins=10) -> NDArray:
-    indicator, _shape = {}, []
+def _get_histogram(parents: Dict[str, NDArray], parent_dists: Dict[str, ParentDist], num_bins: int = 10) -> NDArray:
+    indicator = {}
     for (parent_name, parent_dist), parent in zip(parent_dists.items(), parents.values()):
         if parent_dist.is_discrete:
-            ind, s = np.array([parents == i for i in range(parent_dist.dim)]), parent_dist.dim
+            _parent, dim = parent, parent_dist.dim
         else:
             _, bin_edges = np.histogram(parents[parent_name], bins=num_bins)
-            ind, s = np.digitize(parent, bin_edges) - 1, num_bins
-        indicator[parent_name].append(_shape)
-        _shape.append(s)
+            _parent, dim = np.digitize(parent, (*bin_edges[:-1], bin_edges[-1] + 1)) - 1, num_bins
+        indicator[parent_name] = np.array([_parent == i for i in range(dim)])
+    shape = [parent_dist.dim if parent_dist.is_discrete else num_bins for parent_dist in parent_dists.values()]
     index_map = np.array([np.logical_and.reduce(a) for a in itertools.product(*indicator.values())])
-    index_map = index_map.reshape((*_shape, -1))
+    index_map = index_map.reshape((*shape, -1))
     histogram = np.sum(index_map, axis=-1)
     return histogram
 
@@ -77,7 +76,7 @@ def get_simulated_intervention_datasets(dataset: tf.data.Dataset,
         warnings.warn(f'Distribution does not have full support in:\n{message}')
 
     parent_names = list(parents.keys())
-    datasets, marginals = {}, {}
+    datasets = {}
     for parent_set in powerset(parents.keys()):
         axes = tuple(np.flatnonzero(np.array([parent in parent_set for parent in parents])))
         product_of_marginals = np.ones(shape=(1,) * len(parents))

@@ -1,17 +1,18 @@
 import itertools
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
-from typing import Iterable
+from typing import Any, Callable, Dict, Iterable, Optional
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from clu.metric_writers import create_default_writer
+from datasets.utils import image_gallery
+from jax.tree_util import tree_map
 from tqdm import tqdm
 
-from core import Array, GradientTransformation, Model, Params, Shape
-from datasets.utils import image_gallery
-from core.utils import flatten_nested_dict
+from core import (Array, GradientTransformation, Model, Params, Shape,
+                  flatten_nested_dict)
+
 
 
 def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str], None]] = None) \
@@ -22,13 +23,15 @@ def get_writer_fn(job_dir: Path, name: str, logging_fn: Optional[Callable[[str],
 
     def writer_fn(evaluation: Dict, step: int) -> None:
         flat = flatten_nested_dict(evaluation)
-        scalars = {'/'.join(key): jnp.mean(value) for key, value in flat.items() if value.ndim <= 1}
+        scalars = {'/'.join(key): jnp.mean(value)
+                   for key, value in flat.items() if value.ndim <= 1}
         images = {'/'.join(key): image_gallery(value, num_images_to_display=min(128, value.shape[0]))[np.newaxis]
                   for key, value in flat.items() if value.ndim == 4}
         writer.write_scalars(step, scalars)
         writer.write_images(step, images)
         if logging_fn is not None:
-            [logging_fn(f'epoch: {step:d}: \t{key}: {value:.2f}') for key, value in scalars.items()]
+            [logging_fn(f'epoch: {step:d}: \t{key}: {value:.2f}')
+             for key, value in scalars.items()]
 
     return writer_fn
 
@@ -39,7 +42,7 @@ def update_value(value: Array, new_value: Array) -> Array:
 
 
 def accumulate_output(new_output: Any, cum_output: Optional[Any]) -> Any:
-    return new_output if cum_output is None else jax.tree_multimap(update_value, cum_output, new_output)
+    return new_output if cum_output is None else tree_map(update_value, cum_output, new_output)
 
 
 def train(model: Model,
@@ -61,19 +64,19 @@ def train(model: Model,
     job_dir.mkdir(exist_ok=True, parents=True)
     train_writer = get_writer_fn(job_dir, 'train')
     test_writer = get_writer_fn(job_dir, 'test')
-
-    init_fn, apply_fn, update = model
+    init_fn, apply_fn, update_fn = model
     if use_jit:
-        update = jax.jit(update, static_argnames='optimizer')
+        update_fn = jax.jit(update_fn, static_argnames='optimizer')
         apply_fn = jax.jit(apply_fn)
     rng = jax.random.PRNGKey(seed)
-    _, params = init_fn(rng, input_shape)
+    params = init_fn(rng, input_shape)
     opt_state = optimizer.init(params)
     for step, inputs in tqdm(enumerate(itertools.cycle(train_data)), total=num_steps):
         if step >= num_steps:
             break
         rng, _ = jax.random.split(rng)
-        params, opt_state, loss, output = update(params, optimizer, opt_state, inputs, rng)
+        params, opt_state, loss, output = update_fn(
+            params, optimizer, opt_state, rng, inputs)
         if step % log_every == 0:
             train_writer(output, step)
         if jnp.isnan(loss):
@@ -83,7 +86,7 @@ def train(model: Model,
             cum_output = None
             for test_inputs in test_data:
                 rng, _ = jax.random.split(rng)
-                _, output = apply_fn(params, test_inputs, rng=rng)
+                _, output = apply_fn(params, rng, test_inputs)
                 cum_output = accumulate_output(output, cum_output)
             test_writer(cum_output, step)
 
