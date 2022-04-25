@@ -1,7 +1,7 @@
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, cast
+from typing import List
 
 import optax
 import tensorflow as tf
@@ -19,14 +19,14 @@ hidden_dim = 256
 n_channels = hidden_dim // 4
 
 # Discriminative model layers
-discriminative_backbone = cast(StaxLayer,
-                               serial(
-                                   Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-                                   Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-                                   Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-                                   Flatten,
-                                   Dense(hidden_dim), LeakyRelu,
-                                   Dense(hidden_dim), LeakyRelu))
+discriminative_backbone \
+    = StaxLayer(*serial(
+        Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+        Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+        Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+        Flatten,
+        Dense(hidden_dim), LeakyRelu,
+        Dense(hidden_dim), LeakyRelu))
 
 discriminative_train_config = TrainConfig(batch_size=1024,
                                           optimizer=optax.adam(learning_rate=5e-4, b1=0.9),
@@ -38,7 +38,7 @@ discriminative_train_config = TrainConfig(batch_size=1024,
 # General encoder/decoder
 encoder_layers = (Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
                   Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
-                  cast(StaxLayer, Flatten), Dense(hidden_dim), LeakyRelu)
+                  Flatten, Dense(hidden_dim), LeakyRelu)
 
 decoder_layers = \
     (Dense(hidden_dim), LeakyRelu, Dense(7 * 7 * n_channels), LeakyRelu, Reshape((-1, 7, 7, n_channels)),
@@ -48,10 +48,10 @@ decoder_layers = \
 
 # Conditional VAE baseline
 latent_dim = 16
-vae_encoder = cast(StaxLayer, serial(parallel(serial(*encoder_layers), Identity), FanInConcat(axis=-1),
-                                     Dense(hidden_dim), LeakyRelu,
-                                     FanOut(2), parallel(Dense(latent_dim), Dense(latent_dim))))
-vae_decoder = cast(StaxLayer, serial(FanInConcat(axis=-1), *decoder_layers))
+vae_encoder = StaxLayer(*serial(parallel(serial(*encoder_layers), Identity), FanInConcat(axis=-1),
+                                Dense(hidden_dim), LeakyRelu,
+                                FanOut(2), parallel(Dense(latent_dim), Dense(latent_dim))))
+vae_decoder = StaxLayer(*serial(FanInConcat(axis=-1), *decoder_layers))
 baseline_train_config = TrainConfig(batch_size=512,
                                     optimizer=optax.adam(learning_rate=1e-3),
                                     num_steps=10000,
@@ -59,28 +59,23 @@ baseline_train_config = TrainConfig(batch_size=512,
                                     eval_every=250,
                                     save_every=250)
 
-critic = cast(StaxLayer,
-              serial(
-                  parallel(
-                      serial(Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'),
-                             LeakyRelu,
-                             Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'),
-                             LeakyRelu, Flatten, Dense(hidden_dim), LeakyRelu),
-                      serial(Dense(hidden_dim), LeakyRelu)
-                  ),
-                  FanInConcat(-1),
-                  Dense(hidden_dim), LeakyRelu,
-                  Dense(hidden_dim), LeakyRelu))
+critic = StaxLayer(*serial(
+    parallel(
+        serial(
+            Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+            Conv(n_channels, filter_shape=(4, 4), strides=(2, 2), padding='SAME'), LeakyRelu,
+            Flatten, Dense(hidden_dim), LeakyRelu),
+        serial(Dense(hidden_dim), LeakyRelu)
+    ),
+    FanInConcat(-1),
+    Dense(hidden_dim), LeakyRelu,
+    Dense(hidden_dim), LeakyRelu))
 
-mechanism = cast(StaxLayer,
-                 serial(
-                     parallel(
-                         serial(*encoder_layers),
-                         Identity,
-                         Identity),
-                     FanInConcat(-1),
-                     Dense(hidden_dim), LeakyRelu,
-                     *decoder_layers, Tanh))
+mechanism = StaxLayer(*serial(
+    parallel(serial(*encoder_layers), Identity, Identity),
+    FanInConcat(-1),
+    Dense(hidden_dim), LeakyRelu,
+    *decoder_layers, Tanh))
 
 mechanism_optimizer = optax.chain(optax.adam(learning_rate=1e-4, b1=0.0, b2=.9),
                                   optax.adaptive_grad_clip(clipping=0.01))

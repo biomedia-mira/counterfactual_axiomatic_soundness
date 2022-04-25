@@ -89,7 +89,7 @@ def thickness_intensity_model(confound: bool,
         multiplier = -1 if invert else 1
         # if not confound intensity does not depend on thickness
         _thickness = thickness if confound else numpyro.sample('thickness', thickness_dist, rng_key=k2)
-        loc = (_thickness - 2.5) * 2 * multiplier if confound else 0.
+        loc = (_thickness - 2.5) * 2 * multiplier
         transforms = ComposeTransform([SigmoidTransform(), AffineTransform(64, 191)])
         intensity = numpyro.sample('intensity', TransformedDistribution(Normal(loc, scale), transforms), rng_key=k3)
     return np.array(thickness), np.array(intensity)

@@ -16,7 +16,15 @@ ArrayTree = Union[Array, Iterable['Array'], Mapping[Any, 'Array']]
 
 
 def is_shape(shape: ShapeTree) -> TypeGuard[Shape]:
-    return isinstance(shape, Sequence) and all(isinstance(el, int) for el in shape)
+    return isinstance(shape, Sequence) and all([isinstance(el, int) for el in shape])
+
+
+def is_shape_sequence(shape: ShapeTree) -> TypeGuard[Sequence[Shape]]:
+    return isinstance(shape, Sequence) and all([isinstance(el, Sequence) and is_shape(el) for el in shape])
+
+
+def is_array_sequence(array: ArrayTree) -> TypeGuard[Sequence[Array]]:
+    return all([isinstance(el, Array) for el in array]) and isinstance(array, Sequence)
 
 
 class StaxInitFn(Protocol):

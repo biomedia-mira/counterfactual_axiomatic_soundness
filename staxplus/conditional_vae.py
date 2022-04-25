@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from jax import random, vmap
 
 from staxplus.layers import StaxLayer
-from staxplus.types import Array, ArrayTree, KeyArray, Params, ShapeTree
+from staxplus.types import Array, ArrayTree, KeyArray, Params, ShapeTree, is_shape_sequence
 
 
 def rescale(x: Array, x_range: Tuple[float, float], target_range: Tuple[float, float]) -> Array:
@@ -44,10 +44,14 @@ def c_vae(encoder: StaxLayer,
     dec_init_fn, dec_apply_fn = decoder
 
     do_rescale = bernoulli_ll and input_range != (0., 1.)
-    _rescale = partial(rescale, x_range=input_range, target_range=(0., 1.)) if do_rescale else lambda x: x
-    _undo_rescale = partial(rescale, x_range=(0., 1.), target_range=input_range) if do_rescale else lambda x: x
+
+    def __pass(x: Array) -> Array:
+        return x
+    _rescale = partial(rescale, x_range=input_range, target_range=(0., 1.)) if do_rescale else __pass
+    _undo_rescale = partial(rescale, x_range=(0., 1.), target_range=input_range) if do_rescale else __pass
 
     def init_fn(rng: KeyArray, input_shape: ShapeTree) -> Tuple[ShapeTree, Params]:
+        assert is_shape_sequence(input_shape)
         k1, k2 = random.split(rng, 2)
         (enc_output_shape, _), enc_params = enc_init_fn(k1, input_shape)
         dec_input_shape = (enc_output_shape, input_shape[1])

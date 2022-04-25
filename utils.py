@@ -16,8 +16,10 @@ def flatten_nested_dict(nested_dict: Dict[Any, Any], key: Tuple[Any, ...] = ()) 
     return new_dict
 
 
-def image_gallery(array: NDArray, ncols: int = 16, num_images_to_display: int = 128,
-                  decode_fn: Callable[[NDArray], NDArray] = lambda x: 127.5 * x + 127.5) -> NDArray:
+def image_gallery(array: NDArray[Any],
+                  ncols: int = 16,
+                  num_images_to_display: int = 128,
+                  decode_fn: Callable[[NDArray[Any]], NDArray[Any]] = lambda x: 127.5 * x + 127.5) -> NDArray[Any]:
     array = np.clip(decode_fn(array), a_min=0, a_max=255) / 255.
     array = array[::len(array) // num_images_to_display][:num_images_to_display]
     nindex, height, width, intensity = array.shape

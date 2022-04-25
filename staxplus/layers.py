@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable, Sequence, Tuple, Union
+from typing import Any, Callable, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -8,7 +8,8 @@ from jax.example_libraries.stax import Conv, LeakyRelu, serial
 from jax.nn import normalize
 from jax.nn.initializers import ones, zeros
 
-from staxplus.types import Array, ArrayTree, KeyArray, Params, Shape, ShapeTree, StaxInitialiazer, StaxLayer, is_shape
+from staxplus.types import (Array, ArrayTree, KeyArray, Params, Shape, ShapeTree, StaxInitialiazer, StaxLayer,
+                            is_array_sequence, is_shape, is_shape_sequence)
 
 
 def stax_wrapper(fn: Callable[[ArrayTree], ArrayTree]) -> StaxLayer:
@@ -68,15 +69,14 @@ def broadcast_together(axis: int = -1) -> StaxLayer:
         return jnp.broadcast_to(jnp.expand_dims(array, axis=tuple(range(1, 1 + len(shape) - array.ndim))), shape)
 
     def init_fn(rng: KeyArray, input_shape: ShapeTree) -> Tuple[ShapeTree, Params]:
-        assert isinstance(input_shape, Sequence)
-        assert all([is_shape(el) for el in input_shape])
+        assert is_shape_sequence(input_shape)
         # and all([is_shape(el) for el in input_shape])
         ax = axis % len(input_shape[0])
         out_shape = tuple((*input_shape[0][:ax], shape[axis], *input_shape[0][ax + 1:]) for shape in input_shape)
         return out_shape, ()
 
     def apply_fn(params: Params, inputs: ArrayTree, **kwargs: Any) -> ArrayTree:
-        assert isinstance(inputs, Sequence) and all([isinstance(el, Array) for el in inputs])
+        assert is_array_sequence(inputs)
         ax = axis % len(inputs[0].shape)
         out_shape = inputs[0].shape
         broadcasted = [broadcast(arr, (*out_shape[:ax], arr.shape[axis], *out_shape[ax + 1:])) for arr in inputs[1:]]

@@ -55,6 +55,7 @@ def conditional_vae(parent_dists: Dict[str, ParentDist],
                          image: Array,
                          parents: Dict[str, Array],
                          do_parents: Dict[str, Array]) -> Array:
-            return _apply_fn(params, (image, concat_parents(parents), concat_parents(do_parents)), rng)[1]
+            _, do_image, _ = _apply_fn(params, (image, concat_parents(parents), concat_parents(do_parents)), rng)
+            return do_image
         return mechanism_fn
     return Model(init_fn, apply_fn, update_fn), get_mechanism_fn
