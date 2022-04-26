@@ -4,19 +4,20 @@ import jax.numpy as jnp
 from jax._src.random import KeyArray
 from optax import GradientTransformation, OptState, Params
 from typing_extensions import Protocol, TypeGuard
+import numpy as np
 
 KeyArray = KeyArray
 GradientTransformation = GradientTransformation
 OptState = OptState
 Params = Params
 Array = jnp.ndarray
-Shape = Sequence[int]
+Shape = Sequence[Union[int, np.int32, np.int64]]
 ShapeTree = Union[Shape, Iterable['ShapeTree'], Mapping[Any, 'ShapeTree']]
 ArrayTree = Union[Array, Iterable['Array'], Mapping[Any, 'Array']]
 
 
 def is_shape(shape: ShapeTree) -> TypeGuard[Shape]:
-    return isinstance(shape, Sequence) and all([isinstance(el, int) for el in shape])
+    return isinstance(shape, Sequence) and all([isinstance(el, (int, np.int32, np.int64)) for el in shape])
 
 
 def is_shape_sequence(shape: ShapeTree) -> TypeGuard[Sequence[Shape]]:

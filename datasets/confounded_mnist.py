@@ -1,7 +1,6 @@
 import pickle
 from functools import lru_cache
 from pathlib import Path
-from re import I
 from typing import Any, Dict, Optional, Tuple
 
 import jax.random as random
@@ -145,14 +144,14 @@ def confounded_mnist(data_dir: Path, dataset_name: str, confound: bool, plot: bo
     train_images, train_parents, test_images, test_parents, parent_dists, input_shape = data_fn(data_dir, confound)
     train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_parents))
     test_dataset = tf.data.Dataset.from_tensor_slices((test_images, test_parents))
-    train_data_dict = get_simulated_intervention_datasets(train_dataset, train_parents, parent_dists) 
+    train_data_dict = get_simulated_intervention_datasets(train_dataset, train_parents, parent_dists)
     if not confound:
         train_data_dict = {key: train_dataset for key in train_data_dict.keys()}
 
     def encode(image: tf.Tensor, patents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
         image = (tf.cast(image, tf.float32) - tf.constant(127.5)) / tf.constant(127.5)
-        patents = {parent: tf.one_hot(value, parent_dists[parent].dim) if parent_dists[parent].is_discrete else parent
-                   for parent, value in patents.items()}
+        patents = {parent: tf.one_hot(value, parent_dists[parent].dim) if parent_dists[parent].is_discrete
+                   else tf.expand_dims(value, axis=-1) for parent, value in patents.items()}
         return image, patents
 
     def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:

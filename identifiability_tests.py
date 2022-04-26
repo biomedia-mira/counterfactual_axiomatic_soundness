@@ -7,8 +7,11 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 import matplotlib.pyplot as plt
+import numpy as np
 import tensorflow as tf
 from jax.tree_util import tree_flatten, tree_map, tree_unflatten
+from numpy.typing import NDArray
+from tqdm import tqdm
 
 from experiment import to_numpy_iterator
 from models.utils import DiscriminativeFn, MechanismFn, ParentDist
@@ -16,11 +19,11 @@ from staxplus import Array, KeyArray
 from utils import flatten_nested_dict
 
 TestResult = Union[Dict[str, Array], Dict[str, 'TestResult']]
-Test = Callable[[KeyArray, Array, Dict[str, Array]], Tuple[TestResult, Array]]
+Test = Callable[[KeyArray, Array, Dict[str, Array]], Tuple[TestResult, NDArray[np.uint8]]]
 
 
 def decode_fn(x: Array) -> Array:
-    return jnp.clip(127.5 * x + 127.5, a_min=0, a_max=255).astype(int)
+    return jnp.clip(127.5 * x + 127.5, a_min=0, a_max=255)
 
 
 # Calculates the average pixel l1 distance in the range of 0-255
@@ -28,23 +31,22 @@ def l1(x1: Array, x2: Array) -> Array:
     return jnp.mean(jnp.abs(decode_fn(x1) - decode_fn(x2)), axis=(1, 2, 3))
 
 
-def sequence_plot(image_seq: Array,
+def sequence_plot(image_seq: NDArray[Any],
                   n_cases: int = 10,
-                  max_cols: int = 10,
-                  _decode_fn: Callable[[Array], Array] = decode_fn) -> Array:
+                  max_cols: int = 10) -> NDArray[np.uint8]:
     image_seq = image_seq[:n_cases, :min(image_seq.shape[1], max_cols)]
-    image_seq = _decode_fn(image_seq)
-    gallery = jnp.moveaxis(image_seq, 1, 2).reshape((n_cases * image_seq.shape[2],
-                                                    image_seq.shape[1] * image_seq.shape[3], image_seq.shape[4]))
+    new_shape = (n_cases * image_seq.shape[2], image_seq.shape[1] * image_seq.shape[3], image_seq.shape[4])
+    gallery = np.moveaxis(image_seq, 1, 2).reshape(new_shape)
     return gallery
 
 
-def plot_and_save(image: Array, path: Path) -> None:
+def plot_and_save(image: NDArray[np.uint8], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if image.shape[-1] == 1:
+        image = np.repeat(image, repeats=3, axis=-1)
     plt.imshow(image)
     plt.axis('off')
     plt.savefig(path, bbox_inches='tight', pad_inches=0)
-    # plt.show(block=False)
     plt.close()
 
 
@@ -56,7 +58,7 @@ def effectiveness_test(mechanism_fn: MechanismFn,
                        sep_width: int = 1) -> Test:
     parent_name = parent_dist.name
 
-    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Array]:
+    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, NDArray[np.uint8]]:
         do_parent = parent_dist.sample(rng, (image.shape[0],))
         do_parents = {**parents, parent_name: do_parent}
         do_image = mechanism_fn(rng, image, parents, do_parents)
@@ -69,11 +71,17 @@ def effectiveness_test(mechanism_fn: MechanismFn,
         nrows, ncols = 10, 3 * plot_cases_per_row
         height, width, channels = image.shape[1:]
         im = _decode_fn(jnp.stack((image, do_nothing, do_image), axis=1))
-        _parents, _do_parents = jnp.argmax(parents[parent_name], axis=-1), jnp.argmax(do_parents[parent_name], axis=-1)
-        indices = jnp.concatenate(
-            [jnp.where(jnp.logical_and(jnp.not_equal(_parents, _do_parents), _do_parents == i))[0][:plot_cases_per_row]
-             for i in range(nrows)])
-        im = jnp.reshape(im[indices], (-1, *image.shape[1:]))
+
+        if parent_dist.is_discrete:
+            _neq = jnp.any(jnp.not_equal(parents[parent_name], do_parents[parent_name]), axis=-1)
+            ind = [jnp.where(jnp.logical_and(_neq, do_parents[parent_name][..., i]))[0] for i in range(parent_dist.dim)]
+            indices = jnp.concatenate([ind[i][:plot_cases_per_row * (nrows // parent_dist.dim)]
+                                      for i in range(parent_dist.dim)])
+        else:
+            indices = jnp.argsort(jnp.squeeze(do_parents[parent_name]))
+            indices = indices[np.linspace(0, len(indices), nrows*plot_cases_per_row).astype(int)]
+
+        im = np.array(jnp.reshape(im[indices], (-1, *image.shape[1:]))).astype(np.uint8)
         plot = im.reshape((nrows, ncols, height, width, channels)).swapaxes(1, 2).reshape(height * nrows,
                                                                                           width * ncols, channels)
         if sep_width > 0:
@@ -88,14 +96,16 @@ def effectiveness_test(mechanism_fn: MechanismFn,
 
 def composition_test(mechanism_fn: MechanismFn,
                      horizon: int = 10) -> Test:
-    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Array]:
+    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, NDArray[np.uint8]]:
         image_sequence = [image]
         do_image = image
         for _ in range(horizon):
             do_image = mechanism_fn(rng, do_image, parents, parents)
             image_sequence.append(do_image)
         test_result = {f'distance_{i:d}': l1(image, _do_image) for i, _do_image in enumerate(image_sequence)}
-        plot = sequence_plot(jnp.moveaxis(jnp.array(image_sequence), 0, 1), max_cols=9)
+        # plot
+        image_sequece = np.array(decode_fn(jnp.moveaxis(jnp.array(image_sequence), 0, 1))).astype(np.uint8)
+        plot = sequence_plot(image_sequece, max_cols=9)
         return test_result, plot
 
     return test
@@ -107,7 +117,7 @@ def reversibility_test(mechanism_fn: MechanismFn,
                        num_cycles: int = 1) -> Test:
     parent_name = parent_dist.name
 
-    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Array]:
+    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, NDArray[np.uint8]]:
         do_parent_cycle = parent_dist.sample(rng, (cycle_length - 1, image.shape[0]))
         do_parent_cycle = jnp.concatenate((do_parent_cycle, parents[parent_name][jnp.newaxis]))
         do_parent_cycle = jnp.concatenate([do_parent_cycle] * num_cycles, axis=0)
@@ -119,7 +129,9 @@ def reversibility_test(mechanism_fn: MechanismFn,
             image_sequence.append(do_image)
             parents = do_parents
         output = {f'distance_{i:d}': l1(image, _do_image) for i, _do_image in enumerate(image_sequence)}
-        plot = sequence_plot(jnp.moveaxis(jnp.array(image_sequence), 0, 1), max_cols=9)
+        # plot
+        image_sequece = np.array(decode_fn(jnp.moveaxis(jnp.array(image_sequence), 0, 1))).astype(np.uint8)
+        plot = sequence_plot(image_sequece, max_cols=9)
         return output, plot
 
     return test
@@ -129,7 +141,7 @@ def commutativity_test(mechanism_fns: Dict[str, MechanismFn],
                        parent_dist_1: ParentDist,
                        parent_dist_2: ParentDist,
                        sep_width: int = 1, ) -> Test:
-    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Array]:
+    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, NDArray[np.uint8]]:
 
         image_sequence = []
         for parent_order in itertools.permutations((parent_dist_1, parent_dist_2)):
@@ -146,7 +158,8 @@ def commutativity_test(mechanism_fns: Dict[str, MechanismFn],
         output = {'distance': l1(im1, im2)}
         # plot
         width = image.shape[2]
-        plot = sequence_plot(jnp.moveaxis(jnp.array(image_sequence), 0, 1), max_cols=9)
+        image_sequece = np.array(decode_fn(jnp.moveaxis(jnp.array(image_sequence), 0, 1))).astype(np.uint8)
+        plot = sequence_plot(image_sequece, max_cols=9)
         if sep_width > 0:
             for i in [3, 6]:
                 start, stop = width * i - sep_width // 2, width * i + sep_width // 2 + sep_width % 2
@@ -190,13 +203,13 @@ def evaluate(job_dir: Path,
         if parent_dist.is_invertible:
             tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_dist, num_cycles=5)
     for p1, p2 in itertools.combinations(parent_dists.values(), 2):
-        tests[f'{p1}_{p2}_commutativity'] = commutativity_test(mechanism_fns, p1, p2)
+        tests[f'{p1.name}_{p2.name}_commutativity'] = commutativity_test(mechanism_fns, p1, p2)
 
     rng = random.PRNGKey(0)
     results: TestResult = {}
     test_set = to_numpy_iterator(test_set, 512, drop_remainder=False)
     plot_counter = 0
-    for image, parents in test_set:
+    for image, parents in tqdm(test_set):
         rng, _ = jax.random.split(rng)
         res = tree_map(lambda func: func(rng, image, parents), tests, is_leaf=lambda leaf: callable(leaf))
         flat, treedef = tree_flatten(res, is_leaf=lambda x: isinstance(x, tuple))

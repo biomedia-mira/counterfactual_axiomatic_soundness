@@ -1,6 +1,6 @@
 import itertools
 import warnings
-from typing import Any, Callable, Dict, FrozenSet, Sequence, Tuple
+from typing import Any,  Dict, FrozenSet, Tuple
 
 import numpy as np
 import tensorflow as tf

@@ -6,6 +6,7 @@ import jax.random as random
 from numpy.typing import NDArray
 from staxplus import Array, ArrayTree, KeyArray, Shape
 from typing_extensions import Protocol
+import jax.nn as nn
 
 
 @dataclass(frozen=True)
@@ -17,7 +18,11 @@ class ParentDist:
     samples: NDArray[Any]
 
     def sample(self, rng: KeyArray, sample_shape: Shape) -> Array:
-        return random.choice(rng, self.samples, shape=sample_shape)
+        sample = random.choice(rng, self.samples, shape=sample_shape)
+        if self.is_discrete:
+            return nn.one_hot(sample, num_classes=self.dim)
+        else:
+            return sample[..., jnp.newaxis]
 
 
 class DiscriminativeFn(Protocol):

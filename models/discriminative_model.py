@@ -26,8 +26,10 @@ def discriminative_model(parent_dist: ParentDist, backbone: StaxLayer) \
 
     def regression(params: Params, image: Array, target: Array) -> Tuple[Array, ArrayTree]:
         prediction = _apply_fn(params, image)
-        mse = jnp.square(target - prediction)
-        return jnp.mean(mse), {'mse': mse}
+        mse = jnp.squeeze(jnp.square(target - prediction))
+        absolute_error = jnp.squeeze(jnp.abs(target - prediction))
+        relative_error = absolute_error / jnp.squeeze(jnp.abs(target)) * 100.
+        return jnp.mean(mse), {'mse': mse, 'absolute_error': absolute_error, 'relative_error': relative_error}
 
     def apply_fn(params: Params, rng: KeyArray, inputs: ArrayTree) -> Tuple[Array, ArrayTree]:
         image, parent = inputs
@@ -45,7 +47,7 @@ def discriminative_model(parent_dist: ParentDist, backbone: StaxLayer) \
 
     def get_discriminative_fn(params: Params) -> DiscriminativeFn:
         def discriminative_fn(image: Array, parent: Array) -> Tuple[Array, ArrayTree]:
-            return cast(Tuple[Array, ArrayTree], _apply_fn(params, (image, parent)))
+            return cast(Tuple[Array, ArrayTree], apply_fn(params, None, (image, parent)))
 
         return discriminative_fn
 

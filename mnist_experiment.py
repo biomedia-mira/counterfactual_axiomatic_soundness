@@ -98,7 +98,7 @@ def run_experiment(job_dir: Path,
                    confound: bool,
                    from_joint: bool = True) -> None:
     prefix = 'baseline' if baseline else f'partial_mechanisms_{partial_mechanisms}_M_{constraint_function_power:d}'
-    suffix = f'_confounded_from_joint_{from_joint}' if confound else 'not_confounded'
+    suffix = f'_confounded_from_joint_{from_joint}' if confound else '_not_confounded'
     job_name = Path(prefix + suffix)
     pseudo_oracle_dir = job_dir / scenario_name / 'pseudo_oracles'
     experiment_dir = job_dir / scenario_name / job_name
@@ -174,7 +174,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     configs = [
-        Config(baseline=False, partial_mechanisms=False, constraint_function_power=1, confound=True),
+        Config(baseline=True, partial_mechanisms=False, constraint_function_power=1, confound=False),
     ]
 
     for config in configs:

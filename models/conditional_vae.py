@@ -27,7 +27,7 @@ def conditional_vae(parent_dists: Dict[str, ParentDist],
         return params
 
     def apply_fn(params: Params, rng: KeyArray, inputs: ArrayTree) -> Tuple[Array, Dict[str, Array]]:
-        assert isinstance(inputs, dict) and all(isinstance(el, Array) for el in inputs.values())
+        assert isinstance(inputs, dict)
         k1, k2, k3 = random.split(rng, 3)
         image, parents = inputs[source_dist]
         _parents = concat_parents(parents)
