@@ -17,7 +17,7 @@ ArrayTree = Union[Array, Iterable['Array'], Mapping[Any, 'Array']]
 
 
 def is_shape(shape: ShapeTree) -> TypeGuard[Shape]:
-    return isinstance(shape, Sequence) and all([isinstance(el, (int, np.int32, np.int64)) for el in shape])
+    return isinstance(shape, Sequence) and all([np.issubdtype(type(el), int) for el in shape])  # type: ignore
 
 
 def is_shape_sequence(shape: ShapeTree) -> TypeGuard[Sequence[Shape]]:

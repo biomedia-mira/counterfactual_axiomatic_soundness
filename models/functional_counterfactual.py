@@ -2,12 +2,13 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 import jax.numpy as jnp
 import optax
+from datasets.utils import ParentDist
 from jax import value_and_grad, vmap
 from jax.tree_util import tree_map
 from staxplus import Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, Shape, StaxLayer
 from staxplus.f_gan import f_gan
 
-from models.utils import DiscriminativeFn, MechanismFn, ParentDist, concat_parents, sample_through_shuffling
+from models.utils import DiscriminativeFn, MechanismFn, concat_parents, sample_through_shuffling
 
 
 def l2(x: Array) -> Array:

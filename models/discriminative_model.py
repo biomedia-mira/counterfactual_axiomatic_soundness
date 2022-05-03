@@ -2,13 +2,14 @@ from typing import Callable, Tuple, cast
 
 import jax.numpy as jnp
 import optax
+from datasets.utils import ParentDist
 from jax import value_and_grad
 from jax.example_libraries import stax
 from jax.example_libraries.stax import Dense, Flatten
 from jax.nn import log_softmax
 from staxplus import Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, ShapeTree, StaxLayer
 
-from models.utils import DiscriminativeFn, ParentDist
+from models.utils import DiscriminativeFn
 
 
 def discriminative_model(parent_dist: ParentDist, backbone: StaxLayer) \
@@ -22,14 +23,21 @@ def discriminative_model(parent_dist: ParentDist, backbone: StaxLayer) \
         prediction = log_softmax(_apply_fn(params, image))
         accuracy = jnp.equal(jnp.argmax(prediction, axis=-1), jnp.argmax(target, axis=-1))
         cross_entropy = -jnp.sum(prediction * target, axis=-1)
-        return jnp.mean(cross_entropy), {'cross_entropy': cross_entropy, 'accuracy': accuracy}
+        return jnp.mean(cross_entropy), {'cross_entropy': cross_entropy,
+                                         'accuracy': accuracy,
+                                         'target': target,
+                                         'prediction': prediction}
 
     def regression(params: Params, image: Array, target: Array) -> Tuple[Array, ArrayTree]:
         prediction = _apply_fn(params, image)
         mse = jnp.squeeze(jnp.square(target - prediction))
         absolute_error = jnp.squeeze(jnp.abs(target - prediction))
         relative_error = absolute_error / jnp.squeeze(jnp.abs(target)) * 100.
-        return jnp.mean(mse), {'mse': mse, 'absolute_error': absolute_error, 'relative_error': relative_error}
+        return jnp.mean(mse), {'mse': mse,
+                               'absolute_error': absolute_error,
+                               'relative_error': relative_error,
+                               'target': target,
+                               'prediction': prediction}
 
     def apply_fn(params: Params, rng: KeyArray, inputs: ArrayTree) -> Tuple[Array, ArrayTree]:
         image, parent = inputs

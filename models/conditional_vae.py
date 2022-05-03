@@ -3,12 +3,13 @@ from typing import Callable, Dict, Tuple
 import jax.numpy as jnp
 import jax.random as random
 import optax
+from datasets.utils import ParentDist
 from jax import value_and_grad
 from jax.tree_util import tree_map
 from staxplus import (Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, ShapeTree, StaxLayer,
                       c_vae)
 
-from models.utils import MechanismFn, ParentDist, concat_parents, sample_through_shuffling
+from models.utils import MechanismFn, concat_parents, sample_through_shuffling
 
 
 def conditional_vae(parent_dists: Dict[str, ParentDist],
