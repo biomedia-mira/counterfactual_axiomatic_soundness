@@ -45,12 +45,12 @@ class TrainConfig:
     save_every: int
 
 
-def get_discriminative_models(job_dir: Path,
-                              seed: int,
-                              scenario: Scenario,
-                              backbone: StaxLayer,
-                              train_config: TrainConfig,
-                              overwrite: bool) -> Dict[str, AuxiliaryFn]:
+def get_auxiliary_models(job_dir: Path,
+                         seed: int,
+                         scenario: Scenario,
+                         backbone: StaxLayer,
+                         train_config: TrainConfig,
+                         overwrite: bool) -> Dict[str, AuxiliaryFn]:
     train_datasets, test_dataset, parent_dists, input_shape, _ = scenario
     discriminative_models: Dict[str, AuxiliaryFn] = {}
     for parent_name, parent_dist in parent_dists.items():
@@ -126,17 +126,17 @@ def get_mechanisms(job_dir: Path,
                    overwrite: bool) -> Dict[str, MechanismFn]:
     train_datasets, test_dataset, parent_dists, input_shape, _ = scenario
     parent_names = list(parent_dists.keys())
-    classifiers = get_discriminative_models(job_dir / 'classifiers',
-                                            seed,
-                                            scenario,
-                                            discriminative_backbone,
-                                            classifier_train_config,
-                                            overwrite)
+    aux__models = get_auxiliary_models(job_dir / 'aux_models',
+                                       seed,
+                                       scenario,
+                                       discriminative_backbone,
+                                       classifier_train_config,
+                                       overwrite)
     mechanisms: Dict[str, MechanismFn] = {}
     for parent_name in (parent_names if partial_mechanisms else ['all']):
         model, get_mechanism_fn = functional_counterfactual(do_parent_name=parent_name,
                                                             parent_dists=parent_dists,
-                                                            auxiliary_models=classifiers,
+                                                            auxiliary_models=aux__models,
                                                             critic=critic,
                                                             mechanism=mechanism,
                                                             constraint_function_power=constraint_function_power,

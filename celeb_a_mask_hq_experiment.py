@@ -14,7 +14,7 @@ from jax.example_libraries.stax import Dense, Flatten, LeakyRelu, serial
 from staxplus import Array, KeyArray, Params, Shape, ShapeTree
 from staxplus._staxplus import ResBlock, StaxLayer
 from datasets.celeba_mask_hq import mustache_goatee_scenario
-from experiment import get_discriminative_models, get_mechanisms, TrainConfig
+from experiment import get_auxiliary_models, get_mechanisms, TrainConfig
 from identifiability_tests import evaluate, print_test_results
 
 tf.config.experimental.set_visible_devices([], 'GPU')
@@ -106,7 +106,7 @@ def run_experiment(job_dir: Path,
     scenario_name = 'mustache_goatee_scenario'
     pseudo_oracle_dir = job_dir / scenario_name / 'pseudo_oracles'
     experiment_dir = job_dir / scenario_name / job_name
-    pseudo_oracles = get_discriminative_models(job_dir=pseudo_oracle_dir,
+    pseudo_oracles = get_auxiliary_models(job_dir=pseudo_oracle_dir,
                                                seed=368392,
                                                scenario=scenario,
                                                layers=classifier_layers,

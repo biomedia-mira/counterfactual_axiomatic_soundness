@@ -8,7 +8,7 @@ from jax.example_libraries.stax import (Conv, Dense, FanInConcat, FanOut, Flatte
                                         serial)
 
 from datasets.confounded_mnist import confoudned_mnist
-from experiment import TrainConfig, get_baseline, get_discriminative_models, get_mechanisms
+from experiment import TrainConfig, get_baseline, get_auxiliary_models, get_mechanisms
 from identifiability_tests import evaluate, print_test_results
 from staxplus import Reshape, Resize, StaxLayer
 
@@ -113,12 +113,12 @@ def main(job_dir: Path,
     experiment_dir = Path(job_dir) / scenario_name / job_name
 
     # get pseudo oracles
-    pseudo_oracles = get_discriminative_models(job_dir=pseudo_oracle_dir,
-                                               seed=368392,
-                                               scenario=scenario_unconfounded,
-                                               backbone=discriminative_backbone,
-                                               train_config=discriminative_train_config,
-                                               overwrite=False)
+    pseudo_oracles = get_auxiliary_models(job_dir=pseudo_oracle_dir,
+                                          seed=368392,
+                                          scenario=scenario_unconfounded,
+                                          backbone=discriminative_backbone,
+                                          train_config=discriminative_train_config,
+                                          overwrite=False)
 
     results = []
     seeds = [int(k[1]) for k in random.split(random.PRNGKey(seed), num_seeds)]

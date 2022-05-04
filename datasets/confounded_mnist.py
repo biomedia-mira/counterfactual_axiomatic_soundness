@@ -209,7 +209,7 @@ def confoudned_mnist(scenario_name: str, data_dir: Path, confound: bool, scale: 
 
     train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_parents))
     test_dataset = tf.data.Dataset.from_tensor_slices((test_images, test_parents))
-    train_data_dict, pmf = get_simulated_intervention_datasets(train_dataset, train_parents, parent_dists)
+    train_data_dict, pmf = get_simulated_intervention_datasets(train_dataset, train_parents, parent_dists, num_bins=5)
     if not confound:
         train_data_dict = {key: train_dataset for key in train_data_dict.keys()}
 
