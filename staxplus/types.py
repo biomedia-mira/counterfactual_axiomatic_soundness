@@ -13,7 +13,7 @@ Params = Params
 Array = jnp.ndarray
 Shape = Sequence[Union[int, np.int32, np.int64]]
 ShapeTree = Union[Shape, Iterable['ShapeTree'], Mapping[Any, 'ShapeTree']]
-ArrayTree = Union[Array, Iterable['Array'], Mapping[Any, 'Array']]
+ArrayTree = Union[Array, Iterable['ArrayTree'], Mapping[Any, 'ArrayTree']]
 
 
 def is_shape(shape: ShapeTree) -> TypeGuard[Shape]:

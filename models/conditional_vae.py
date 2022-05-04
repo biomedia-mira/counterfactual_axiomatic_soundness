@@ -9,7 +9,8 @@ from jax.tree_util import tree_map
 from staxplus import (Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, ShapeTree, StaxLayer,
                       c_vae)
 
-from models.utils import MechanismFn, concat_parents, sample_through_shuffling
+from models.utils import MechanismFn, concat_parents, sample_through_shuffling, is_inputs
+from staxplus.types import is_shape
 
 
 def conditional_vae(parent_dists: Dict[str, ParentDist],
@@ -23,12 +24,13 @@ def conditional_vae(parent_dists: Dict[str, ParentDist],
     _init_fn, _apply_fn = c_vae(vae_encoder, vae_decoder, input_range=(-1., 1.), bernoulli_ll=True)
 
     def init_fn(rng: KeyArray, input_shape: ShapeTree) -> Params:
+        assert is_shape(input_shape)
         c_shape = (-1, sum(parent_dims.values()))
         _, params = _init_fn(rng, (input_shape, c_shape))
         return params
 
     def apply_fn(params: Params, rng: KeyArray, inputs: ArrayTree) -> Tuple[Array, Dict[str, Array]]:
-        assert isinstance(inputs, dict)
+        assert is_inputs(inputs)
         k1, k2, k3 = random.split(rng, 3)
         image, parents = inputs[source_dist]
         _parents = concat_parents(parents)
@@ -43,11 +45,9 @@ def conditional_vae(parent_dists: Dict[str, ParentDist],
                   optimizer: GradientTransformation,
                   opt_state: OptState,
                   rng: KeyArray,
-                  inputs: ArrayTree) -> Tuple[Params, OptState, Array, ArrayTree]:
-        (loss, outputs), grads = value_and_grad(
-            apply_fn, has_aux=True)(params, rng, inputs)
-        updates, opt_state = optimizer.update(
-            updates=grads, state=opt_state, params=params)
+                  inputs: ArrayTree) -> Tuple[Params, OptState, Array, Dict[str, Array]]:
+        (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(params, rng, inputs)
+        updates, opt_state = optimizer.update(updates=grads, state=opt_state, params=params)
         params = optax.apply_updates(params, updates)
         return params, opt_state, loss, outputs
 

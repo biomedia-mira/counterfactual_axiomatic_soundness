@@ -105,8 +105,10 @@ def main(job_dir: Path,
     dataset_name, scenario \
         = confoudned_mnist(scenario_name, data_dir, confound=confound, scale=scale, outlier_prob=outlier_prob)
 
-    job_name = 'cvae' if baseline else f'func_mech_partial_{partial_mechanisms}_M_{constraint_function_power:d}_from_joint_{from_joint}'
-    job_name += dataset_name
+    job_name = 'cvae' if baseline else f'func_mech_partial_{partial_mechanisms}' \
+        f'_M_{constraint_function_power:d}_from_joint_{from_joint}'
+    job_name += f'_{dataset_name}'
+
     pseudo_oracle_dir = Path(job_dir) / scenario_name / 'pseudo_oracles'
     experiment_dir = Path(job_dir) / scenario_name / job_name
 

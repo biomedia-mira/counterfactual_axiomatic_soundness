@@ -1,13 +1,13 @@
-from typing import Dict, Tuple
+from typing import Dict, FrozenSet, Tuple
 
 import jax.numpy as jnp
 import jax.random as random
 from staxplus import Array, ArrayTree, KeyArray
-from typing_extensions import Protocol
+from typing_extensions import Protocol, TypeGuard
 
 
-class DiscriminativeFn(Protocol):
-    def __call__(self, image: Array, parent: Array) -> Tuple[Array, ArrayTree]:
+class AuxiliaryFn(Protocol):
+    def __call__(self, image: Array, parent: Array) -> Tuple[Array, Dict[str, Array]]:
         ...
 
 
@@ -27,3 +27,13 @@ def concat_parents(parents: Dict[str, Array]) -> Array:
 def sample_through_shuffling(rng: KeyArray, parents: Dict[str, Array]) -> Dict[str, Array]:
     return {parent_name: random.shuffle(_rng, parent)
             for _rng, (parent_name, parent) in zip(random.split(rng, len(parents)), parents.items())}
+
+
+def is_inputs(inputs: ArrayTree) -> TypeGuard[Dict[FrozenSet[str], Tuple[Array, Dict[str, Array]]]]:
+    return isinstance(inputs, dict) \
+        and all([isinstance(k1, frozenset)
+                 and isinstance(v1, tuple)
+                 and isinstance(v1[0], Array)
+                 and isinstance(v1[1], dict)
+                 and all([isinstance(k2, str) and isinstance(v2, Array) for k2, v2 in v1[1].items()])
+                 for k1, v1 in inputs.items()])

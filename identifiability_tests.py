@@ -15,9 +15,11 @@ from tqdm import tqdm
 
 from datasets.utils import ParentDist, Scenario, PMF
 from experiment import to_numpy_iterator
-from models.utils import DiscriminativeFn, MechanismFn
+from models.utils import AuxiliaryFn, MechanismFn
 from staxplus import Array, KeyArray
 from utils import flatten_nested_dict
+import yaml
+
 
 TestResult = Union[Dict[str, Array], Dict[str, 'TestResult']]
 Plots = Union[NDArray[np.uint8], Dict[str, NDArray[np.uint8]]]
@@ -42,11 +44,6 @@ def sequence_plot(image_seq: NDArray[Any],
     return gallery
 
 
-def plot_and_save(image: NDArray[np.uint8], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    plt.imsave(str(path), image)
-
-
 class PlotMode(Enum):
     DEFAULT = 1
     LOW_DENSITY = 2
@@ -55,7 +52,7 @@ class PlotMode(Enum):
 
 def effectiveness_test(mechanism_fn: MechanismFn,
                        parent_dist: ParentDist,
-                       pseudo_oracles: Dict[str, DiscriminativeFn],
+                       pseudo_oracles: Dict[str, AuxiliaryFn],
                        joint_pmf: PMF,
                        _decode_fn: Callable[[Array], Array] = decode_fn,
                        plot_cases_per_row: int = 3,
@@ -190,15 +187,13 @@ def print_test_results(trees: Iterable[Any]) -> None:
     def print_fn(value: Array, precision: str = '.4f') -> str:
         per_seed_mean = jnp.mean(value, axis=-1)
         return f'{jnp.mean(per_seed_mean):{precision}} {jnp.std(per_seed_mean):{precision}}'
-
-    for key, value in flatten_nested_dict(tree_map(print_fn, tree_of_stacks)).items():
-        print(key, value)
+    print(yaml.dump(tree_map(print_fn, tree_of_stacks), default_flow_style=False))
 
 
 def evaluate(job_dir: Path,
              scenario: Scenario,
              mechanism_fns: Dict[str, MechanismFn],
-             pseudo_oracles: Dict[str, DiscriminativeFn],
+             pseudo_oracles: Dict[str, AuxiliaryFn],
              num_batches_to_plot: int = 1,
              overwrite: bool = False) -> TestResult:
     results_path = (job_dir / 'results.pickle')
@@ -229,8 +224,11 @@ def evaluate(job_dir: Path,
         output, plots = [tree_unflatten(treedef, [el[i] for el in flat]) for i in (0, 1)]
         results = output if not results else tree_map(lambda x, y: jnp.concatenate((x, y)), results, output)
         if plot_counter < num_batches_to_plot:
-            for key, value in flatten_nested_dict(plots).items():
-                plot_and_save(value, job_dir / 'plots' / ('_'.join(key) + f'_{plot_counter:d}.png'))
+            for key, image in flatten_nested_dict(plots).items():
+                path = job_dir / 'plots' / ('_'.join(key) + f'_{plot_counter:d}.png')
+                path.parent.mkdir(parents=True, exist_ok=True)
+                plt.imsave(str(path), image)
+
             plot_counter += 1
 
     with open(job_dir / 'results.pickle', mode='wb') as f:

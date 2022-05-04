@@ -7,9 +7,9 @@ import tensorflow_datasets as tfds
 
 from datasets.utils import Array, Scenario
 from models.conditional_vae import conditional_vae
-from models.discriminative_model import discriminative_model
+from models.auxiliary_model import auxiliary_model
 from models.functional_counterfactual import functional_counterfactual
-from models.utils import DiscriminativeFn, MechanismFn
+from models.utils import AuxiliaryFn, MechanismFn
 from staxplus import GradientTransformation, StaxLayer
 from staxplus.train import train
 
@@ -50,11 +50,11 @@ def get_discriminative_models(job_dir: Path,
                               scenario: Scenario,
                               backbone: StaxLayer,
                               train_config: TrainConfig,
-                              overwrite: bool) -> Dict[str, DiscriminativeFn]:
+                              overwrite: bool) -> Dict[str, AuxiliaryFn]:
     train_datasets, test_dataset, parent_dists, input_shape, _ = scenario
-    discriminative_models: Dict[str, DiscriminativeFn] = {}
+    discriminative_models: Dict[str, AuxiliaryFn] = {}
     for parent_name, parent_dist in parent_dists.items():
-        model, get_discriminative_fn = discriminative_model(parent_dist, backbone=backbone)
+        model, get_discriminative_fn = auxiliary_model(parent_dist, backbone=backbone)
         target_dist = frozenset((parent_name,))
 
         def select_parent(image: Array, parents: Dict[str, Array]) -> Tuple[Array, Array]:
@@ -136,7 +136,7 @@ def get_mechanisms(job_dir: Path,
     for parent_name in (parent_names if partial_mechanisms else ['all']):
         model, get_mechanism_fn = functional_counterfactual(do_parent_name=parent_name,
                                                             parent_dists=parent_dists,
-                                                            classifiers=classifiers,
+                                                            auxiliary_models=classifiers,
                                                             critic=critic,
                                                             mechanism=mechanism,
                                                             constraint_function_power=constraint_function_power,

@@ -1,24 +1,24 @@
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, cast
 
 import jax.numpy as jnp
 import optax
 from datasets.utils import ParentDist
 from jax import value_and_grad, vmap
 from jax.tree_util import tree_map
-from staxplus import Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, Shape, StaxLayer
+from staxplus import Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, ShapeTree, StaxLayer
 from staxplus.f_gan import f_gan
 
-from models.utils import DiscriminativeFn, MechanismFn, concat_parents, sample_through_shuffling
+from models.utils import AuxiliaryFn, MechanismFn, concat_parents, is_inputs, sample_through_shuffling
 
 
 def l2(x: Array) -> Array:
-    return vmap(lambda arr: jnp.linalg.norm(jnp.ravel(arr), ord=2))(x)
+    return vmap(lambda arr: jnp.linalg.norm(jnp.ravel(arr), ord=2))(x)  # type: ignore
 
 
 # If do_parent_name =='all' uses full mechanism else uses partial mechanism
 def functional_counterfactual(do_parent_name: str,
                               parent_dists: Dict[str, ParentDist],
-                              classifiers: Dict[str, DiscriminativeFn],
+                              auxiliary_models: Dict[str, AuxiliaryFn],
                               critic: StaxLayer,
                               mechanism: StaxLayer,
                               constraint_function_power: int = 1,
@@ -29,7 +29,7 @@ def functional_counterfactual(do_parent_name: str,
     parent_dims = tree_map(lambda x: x.dim, parent_dists)
     assert len(parent_dims) > 0
     assert do_parent_name in ['all', *parent_dists.keys()]
-    assert parent_dims.keys() == classifiers.keys()
+    assert parent_dims.keys() == auxiliary_models.keys()
     assert constraint_function_power >= 1
     do_parent_names = tuple(parent_dims.keys()) if do_parent_name == 'all' else (do_parent_name,)
     source_dist = frozenset() if from_joint else frozenset(parent_dims.keys())
@@ -38,7 +38,7 @@ def functional_counterfactual(do_parent_name: str,
     mechanism_init_fn, mechanism_apply_fn = mechanism
     _is_invertible = all([parent_dists[parent_name].is_invertible for parent_name in do_parent_names])
 
-    def init_fn(rng: KeyArray, input_shape: Shape) -> Params:
+    def init_fn(rng: KeyArray, input_shape: ShapeTree) -> Params:
         c_shape = (-1, sum(parent_dims.values()))
         _, f_div_params = divergence_init_fn(rng, (input_shape, c_shape))
         c_shape = (-1, sum([dim for p_name, dim in parent_dims.items() if p_name in do_parent_names]))
@@ -49,9 +49,10 @@ def functional_counterfactual(do_parent_name: str,
         return concat_parents({p_name: array for p_name, array in parents.items() if p_name in do_parent_names})
 
     def apply_mechanism(params: Params, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
-        return mechanism_apply_fn(params, (image, parents_to_array(parents), parents_to_array(do_parents)))
+        return cast(Array, mechanism_apply_fn(params, (image, parents_to_array(parents), parents_to_array(do_parents))))
 
     def apply_fn(params: Params, rng: KeyArray, inputs: ArrayTree) -> Tuple[Array, ArrayTree]:
+        assert(is_inputs(inputs))
         divergence_params, mechanism_params = params
         (image, parents) = inputs[source_dist]
 
@@ -64,8 +65,8 @@ def functional_counterfactual(do_parent_name: str,
         p_sample = (inputs[target_dist][0], concat_parents(inputs[target_dist][1]))
         q_sample = (do_image, concat_parents(do_parents))
         loss, output = divergence_apply_fn(divergence_params, p_sample, q_sample)
-        for parent_name, classifier in classifiers.items():
-            cross_entropy, output[parent_name] = classifier((do_image, do_parents[parent_name]))
+        for parent_name, aux_model in auxiliary_models.items():
+            cross_entropy, output[parent_name] = aux_model(do_image, do_parents[parent_name])
             loss = loss + cross_entropy
         output.update({'image': image[order], 'do_image': do_image[order]})
 
@@ -113,7 +114,8 @@ def functional_counterfactual(do_parent_name: str,
 
     def get_mechanism_fn(params: Params) -> MechanismFn:
         def mechanism_fn(rng: KeyArray, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
-            return apply_mechanism(params[1], image, parents, do_parents)
+            _, mechanism_params = params
+            return apply_mechanism(mechanism_params, image, parents, do_parents)
 
         return mechanism_fn
 
