@@ -32,11 +32,11 @@ def auxiliary_model(parent_dist: ParentDist, backbone: StaxLayer) -> Tuple[Model
         mse = jnp.squeeze(jnp.square(target - prediction))
         absolute_error = jnp.squeeze(jnp.abs(target - prediction))
         relative_error = absolute_error / jnp.squeeze(jnp.abs(target)) * 100.
-        return jnp.mean(mse), {'mse': mse,
-                               'absolute_error': absolute_error,
-                               'relative_error': relative_error,
-                               'target': target,
-                               'prediction': prediction}
+        return 100 * jnp.mean(mse), {'mse': mse,
+                                     'absolute_error': absolute_error,
+                                     'relative_error': relative_error,
+                                     'target': target,
+                                     'prediction': prediction}
 
     def apply_fn(params: Params, rng: KeyArray, inputs: ArrayTree) -> Tuple[Array, Dict[str, Array]]:
         image, parent = inputs

@@ -227,6 +227,7 @@ def evaluate(job_dir: Path,
             for key, image in flatten_nested_dict(plots).items():
                 path = job_dir / 'plots' / ('_'.join(key) + f'_{plot_counter:d}.png')
                 path.parent.mkdir(parents=True, exist_ok=True)
+                image = image if image.shape[-1] == 3 else np.repeat(image, repeats=3, axis=-1)
                 plt.imsave(str(path), image)
 
             plot_counter += 1

@@ -85,12 +85,14 @@ def broadcast_together(axis: int = -1) -> StaxLayer:
     return StaxLayer(init_fn, apply_fn)
 
 
-def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int]) -> StaxLayer:
+def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int], preconv: bool = False) -> StaxLayer:
     PixelNorm2D = layer_norm(axis=(3,))
-    _init_fn, _apply_fn = serial(Conv(out_features, filter_shape=(3, 3), strides=(1, 1), padding='SAME'),
-                                 PixelNorm2D, LeakyRelu,
-                                 Conv(out_features, filter_shape=filter_shape, strides=strides, padding='SAME'),
-                                 PixelNorm2D, LeakyRelu)
+    path = (Conv(out_features, filter_shape=(3, 3), strides=(1, 1), padding='SAME'),
+            PixelNorm2D, LeakyRelu,
+            Conv(out_features, filter_shape=filter_shape, strides=strides, padding='SAME'),
+            PixelNorm2D, LeakyRelu)
+    path = path if preconv else path[3:]
+    _init_fn, _apply_fn = serial(*path)
 
     def apply_fn(params: Params, inputs: Array, **kwargs: Any) -> Array:
         output = _apply_fn(params, inputs)

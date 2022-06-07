@@ -1,6 +1,6 @@
 from staxplus.conditional_vae import c_vae
 from staxplus.f_gan import f_gan
-from staxplus.layers import broadcast_together, layer_norm, reshape, resize
+from staxplus.layers import broadcast_together, layer_norm, reshape, resize, ResBlock
 from staxplus.train import train
 from staxplus.types import (Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, Shape,
                             ShapeTree, StaxLayer)
@@ -24,6 +24,7 @@ __all__ = ['Array',
            'Model',
            'OptState',
            'Params',
+           'ResBlock',
            'Reshape',
            'Resize',
            'Shape',

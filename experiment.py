@@ -9,13 +9,16 @@ from datasets.utils import Array, Scenario
 from models.conditional_vae import conditional_vae
 from models.auxiliary_model import auxiliary_model
 from models.functional_counterfactual import functional_counterfactual
+from models.last_try import functional_counterfactual_vae
 from models.utils import AuxiliaryFn, MechanismFn
 from staxplus import GradientTransformation, StaxLayer
 from staxplus.train import train
 
 
 def to_numpy_iterator(data: tf.data.Dataset, batch_size: int, drop_remainder: bool = True) -> Any:
-    return tfds.as_numpy(data.batch(batch_size, drop_remainder=drop_remainder).prefetch(tf.data.AUTOTUNE))
+    return tfds.as_numpy(data.batch(batch_size,
+                                    drop_remainder=drop_remainder,
+                                    num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE))
 
 
 def prep_mechanism_data(do_parent_name: str,
@@ -82,18 +85,37 @@ def get_auxiliary_models(job_dir: Path,
 def get_baseline(job_dir: Path,
                  seed: int,
                  scenario: Scenario,
+                 pseudo_oracles: Dict[str, AuxiliaryFn],
                  vae_encoder: StaxLayer,
                  vae_decoder: StaxLayer,
+                 aux_backbone: StaxLayer,
+                 aux_train_config: TrainConfig,
                  train_config: TrainConfig,
                  from_joint: bool,
                  overwrite: bool) -> Dict[str, MechanismFn]:
     train_datasets, test_dataset, parent_dists, input_shape, _ = scenario
     parent_names = list(parent_dists.keys())
     parent_name = 'all'
+    aux_models = get_auxiliary_models(job_dir=job_dir,
+                                      seed=seed,
+                                      scenario=scenario,
+                                      backbone=aux_backbone,
+                                      train_config=aux_train_config,
+                                      overwrite=overwrite)
     model, get_mechanism_fn = conditional_vae(parent_dists=parent_dists,
+                                              oracles=aux_models,
+                                              aux_models=aux_models,
                                               vae_encoder=vae_encoder,
                                               vae_decoder=vae_decoder,
                                               from_joint=from_joint)
+    # model, get_mechanism_fn = functional_counterfactual_vae(do_parent_name=parent_name,
+    #                                                         parent_dists=parent_dists,
+    #                                                         vae_encoder=vae_encoder,
+    #                                                         vae_decoder=vae_decoder,
+    #                                                         oracles=pseudo_oracles,
+    #                                                         aux_backbone=aux_backbone,
+    #                                                         from_joint=from_joint)
+
     train_data, test_data = prep_mechanism_data(parent_name, parent_names, from_joint, train_datasets,
                                                 test_dataset, train_config.batch_size)
     params = train(model=model,
@@ -117,8 +139,7 @@ def get_mechanisms(job_dir: Path,
                    scenario: Scenario,
                    partial_mechanisms: bool,
                    constraint_function_power: int,
-                   discriminative_backbone: StaxLayer,
-                   classifier_train_config: TrainConfig,
+                   pseudo_oracles: Dict[str, AuxiliaryFn],
                    critic: StaxLayer,
                    mechanism: StaxLayer,
                    train_config: TrainConfig,
@@ -126,17 +147,11 @@ def get_mechanisms(job_dir: Path,
                    overwrite: bool) -> Dict[str, MechanismFn]:
     train_datasets, test_dataset, parent_dists, input_shape, _ = scenario
     parent_names = list(parent_dists.keys())
-    aux__models = get_auxiliary_models(job_dir / 'aux_models',
-                                       seed,
-                                       scenario,
-                                       discriminative_backbone,
-                                       classifier_train_config,
-                                       overwrite)
     mechanisms: Dict[str, MechanismFn] = {}
     for parent_name in (parent_names if partial_mechanisms else ['all']):
         model, get_mechanism_fn = functional_counterfactual(do_parent_name=parent_name,
                                                             parent_dists=parent_dists,
-                                                            auxiliary_models=aux__models,
+                                                            oracles=pseudo_oracles,
                                                             critic=critic,
                                                             mechanism=mechanism,
                                                             constraint_function_power=constraint_function_power,

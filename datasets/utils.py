@@ -119,7 +119,7 @@ def get_simulated_intervention_datasets(dataset: tf.data.Dataset,
     joint_dist = histogram / np.sum(histogram)
 
     datasets = {}
-    for parent_set in powerset(parents.keys()):
+    for seed, parent_set in enumerate(powerset(parents.keys())):
         axes = tuple(np.flatnonzero(np.array([parent in parent_set for parent in parents])))
         product_of_marginals = np.ones(shape=(1,) * len(parents))
         for axis in axes:
@@ -129,16 +129,17 @@ def get_simulated_intervention_datasets(dataset: tf.data.Dataset,
         weights = interventional_dist / histogram
         num_repeats = np.round(weights / np.min(weights[histogram > 0])).astype(int)
         num_repeats[histogram == 0] = 0
-        print(f'{str(parent_set)}: max_num_repeat={np.max(num_repeats):d}; total_num_repeats:{np.sum(num_repeats):d}')
+        new_dataset_len = np.sum(histogram * num_repeats)
+        print(f'{str(parent_set)}: max_num_repeat={np.max(num_repeats):d}; new_dataset_len:{new_dataset_len:d}')
 
         num_repeats_per_element = np.take(num_repeats, np.ravel_multi_index(index_map.T.tolist(), num_repeats.shape)).T
         tf_num_repeats_per_element = tf.convert_to_tensor(num_repeats_per_element)
 
         def resample_fn(index: tf.Tensor, data: Tuple[tf.Tensor, Dict[str, tf.Tensor]]) -> tf.data.Dataset:
-            image, parents = data
-            return tf.data.Dataset.from_tensors((image, parents)).repeat(tf_num_repeats_per_element[index])
+            return tf.data.Dataset.from_tensors(data).repeat(tf_num_repeats_per_element[index])
         unconfounded_dataset = dataset.enumerate().flat_map(resample_fn)
-        unconfounded_dataset = unconfounded_dataset.shuffle(buffer_size=np.sum(histogram * num_repeats),
-                                                            reshuffle_each_iteration=True)
+        unconfounded_dataset = unconfounded_dataset.shuffle(buffer_size=new_dataset_len,
+                                                            reshuffle_each_iteration=False,
+                                                            seed=seed)
         datasets[frozenset(parent_set)] = unconfounded_dataset
     return datasets, pmf
