@@ -9,34 +9,34 @@ from jax.tree_util import tree_map
 from staxplus import Array, ArrayTree, GradientTransformation, KeyArray, Model, OptState, Params, ShapeTree, StaxLayer
 from staxplus.f_gan import f_gan
 
-from models.utils import AuxiliaryFn, MechanismFn, concat_parents, is_inputs
+from models.utils import AuxiliaryFn, CouterfactualFn, concat_parents, is_inputs
 
 
 def l2(x: Array) -> Array:
     return vmap(lambda arr: jnp.linalg.norm(jnp.ravel(arr), ord=2))(x)  # type: ignore
 
 
-def functional_counterfactual(do_parent_name: str,
-                              parent_dists: Dict[str, ParentDist],
-                              oracles: Dict[str, AuxiliaryFn],
-                              critic: StaxLayer,
-                              mechanism: StaxLayer,
-                              constraint_function_power: int = 1,
-                              from_joint: bool = True) -> Tuple[Model, Callable[[Params], MechanismFn]]:
+def conditional_gan(do_parent_name: str,
+                    parent_dists: Dict[str, ParentDist],
+                    pseudo_oracles: Dict[str, AuxiliaryFn],
+                    critic: StaxLayer,
+                    generator: StaxLayer,
+                    constraint_function_power: int = 1,
+                    from_joint: bool = True) -> Tuple[Model, Callable[[Params], CouterfactualFn]]:
     """
-    Behaves like a partial mechanism if the set of do_parent_names is smaller than parent_dims.keys()
-    If do_parent_name =='all' uses full mechanism else uses partial mechanism
+    Behaves like a partial function if the set of do_parent_names is smaller than parent_dims.keys()
+    If do_parent_name =='all' uses full generator else uses partial function
     """
     parent_dims = tree_map(lambda x: x.dim, parent_dists)
     assert len(parent_dims) > 0
     assert do_parent_name in ['all', *parent_dists.keys()]
-    assert parent_dims.keys() == oracles.keys()
+    assert parent_dims.keys() == pseudo_oracles.keys()
     assert constraint_function_power >= 1
     do_parent_names = tuple(parent_dims.keys()) if do_parent_name == 'all' else (do_parent_name,)
     source_dist = frozenset() if from_joint else frozenset(parent_dims.keys())
     target_dist = frozenset(do_parent_names) if from_joint else frozenset(parent_dims.keys())
     divergence_init_fn, divergence_apply_fn = f_gan(critic=critic, mode='gan', trick_g=True)
-    mechanism_init_fn, mechanism_apply_fn = mechanism
+    mechanism_init_fn, mechanism_apply_fn = generator
     _is_invertible = all([parent_dists[parent_name].is_invertible for parent_name in do_parent_names])
 
     def init_fn(rng: KeyArray, input_shape: ShapeTree) -> Params:
@@ -65,7 +65,7 @@ def functional_counterfactual(do_parent_name: str,
 
         output: ArrayTree = {}
         # measure parents (only for logging purposes)
-        for parent_name, oracle in oracles.items():
+        for parent_name, oracle in pseudo_oracles.items():
             _, output[parent_name] = oracle(do_image, do_parents[parent_name])
 
         # effectiveness constraint
@@ -108,17 +108,15 @@ def functional_counterfactual(do_parent_name: str,
         zero_grads = tree_map(lambda x: jnp.zeros_like(x), params)
         # step discriminator
         (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(params, k1, inputs)
-        updates_0, opt_state_0 = optimizer.update(updates=(grads[0], zero_grads[1]), state=opt_state, params=params)
-        params = optax.apply_updates(params, updates_0)
+        updates, opt_state = optimizer.update(updates=(grads[0], zero_grads[1]), state=opt_state, params=params)
+        params = optax.apply_updates(params, updates)
         # step generator
         (loss, outputs), grads = value_and_grad(apply_fn, has_aux=True)(params, k2, inputs)
-        updates_1, opt_state_1 = optimizer.update(updates=(zero_grads[0], grads[1]), state=opt_state, params=params)
-        params = optax.apply_updates(params, updates_1)
-        # create new state
-        opt_state = (opt_state_0[0], opt_state_1[1])
+        updates, opt_state = optimizer.update(updates=(zero_grads[0], grads[1]), state=opt_state, params=params)
+        params = optax.apply_updates(params, updates)
         return params, opt_state, loss, outputs
 
-    def get_mechanism_fn(params: Params) -> MechanismFn:
+    def get_mechanism_fn(params: Params) -> CouterfactualFn:
         def mechanism_fn(rng: KeyArray, image: Array, parents: Dict[str, Array], do_parents: Dict[str, Array]) -> Array:
             _, mechanism_params = params
             return apply_mechanism(mechanism_params, image, parents, do_parents)

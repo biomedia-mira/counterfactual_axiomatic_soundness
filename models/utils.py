@@ -10,7 +10,7 @@ class AuxiliaryFn(Protocol):
         ...
 
 
-class MechanismFn(Protocol):
+class CouterfactualFn(Protocol):
     def __call__(self,
                  rng: KeyArray,
                  image: Array,

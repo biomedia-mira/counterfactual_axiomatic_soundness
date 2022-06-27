@@ -85,7 +85,10 @@ def broadcast_together(axis: int = -1) -> StaxLayer:
     return StaxLayer(init_fn, apply_fn)
 
 
-def ResBlock(out_features: int, filter_shape: Tuple[int, int], strides: Tuple[int, int], preconv: bool = False) -> StaxLayer:
+def ResBlock(out_features: int,
+             filter_shape: Tuple[int, int],
+             strides: Tuple[int, int],
+             preconv: bool = False) -> StaxLayer:
     PixelNorm2D = layer_norm(axis=(3,))
     path = (Conv(out_features, filter_shape=(3, 3), strides=(1, 1), padding='SAME'),
             PixelNorm2D, LeakyRelu,

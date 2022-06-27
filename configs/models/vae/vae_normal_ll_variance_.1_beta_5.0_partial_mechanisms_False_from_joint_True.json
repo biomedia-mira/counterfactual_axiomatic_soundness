@@ -1,0 +1,8 @@
+{
+    "name": "vae",
+    "bernoulli_ll": false,
+    "normal_ll_variance": 0.1,
+    "beta": 5.0,
+    "partial_mechanisms": false,
+    "from_joint": true
+}

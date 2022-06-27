@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from datasets.utils import ParentDist, Scenario, PMF
 from experiment import to_numpy_iterator
-from models.utils import AuxiliaryFn, MechanismFn
+from models.utils import AuxiliaryFn, CouterfactualFn
 from staxplus import Array, KeyArray
 from utils import flatten_nested_dict
 import yaml
@@ -50,7 +50,16 @@ class PlotMode(Enum):
     HIGH_DENSITY = 3
 
 
-def effectiveness_test(mechanism_fn: MechanismFn,
+def pseudo_oracle_test(pseudo_oracles: Dict[str, AuxiliaryFn]) -> Test:
+    def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Plots]:
+        test_result = {}
+        for parent_name, parent in parents.items():
+            _, test_result[parent_name] = pseudo_oracles[parent_name](image=image, parent=parent)
+        return test_result, {}
+    return test
+
+
+def effectiveness_test(mechanism_fn: CouterfactualFn,
                        parent_dist: ParentDist,
                        pseudo_oracles: Dict[str, AuxiliaryFn],
                        joint_pmf: PMF,
@@ -108,7 +117,7 @@ def effectiveness_test(mechanism_fn: MechanismFn,
     return test
 
 
-def composition_test(mechanism_fn: MechanismFn,
+def composition_test(mechanism_fn: CouterfactualFn,
                      horizon: int = 10) -> Test:
     def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Plots]:
         image_sequence = [image]
@@ -124,7 +133,7 @@ def composition_test(mechanism_fn: MechanismFn,
     return test
 
 
-def reversibility_test(mechanism_fn: MechanismFn,
+def reversibility_test(mechanism_fn: CouterfactualFn,
                        parent_dist: ParentDist,
                        cycle_length: int = 2,
                        num_cycles: int = 1) -> Test:
@@ -149,7 +158,7 @@ def reversibility_test(mechanism_fn: MechanismFn,
     return test
 
 
-def commutativity_test(mechanism_fns: Dict[str, MechanismFn],
+def commutativity_test(mechanism_fns: Dict[str, CouterfactualFn],
                        parent_dist_1: ParentDist,
                        parent_dist_2: ParentDist,
                        sep_width: int = 1, ) -> Test:
@@ -184,25 +193,37 @@ def commutativity_test(mechanism_fns: Dict[str, MechanismFn],
 def print_test_results(trees: Iterable[Any]) -> None:
     tree_of_stacks = tree_map(lambda *x: jnp.stack(x), *trees)
 
-    def print_fn(value: Array, precision: str = '.4f') -> str:
+    def formatter(_dict: Dict[Any, Any]) -> Dict[Any, Any]:
+        for key, value in _dict.items():
+            if isinstance(value, dict):
+                _dict[key] = formatter(_dict[key])
+            else:
+                if key in ['accuracy', 'absolute_error']:
+                    _dict[key] = value * 100
+        return _dict
+    tree_of_stacks = formatter(tree_of_stacks)
+
+    def print_fn(value: Array, precision: str = '.2f') -> str:
         per_seed_mean = jnp.mean(value, axis=-1)
-        return f'{jnp.mean(per_seed_mean):{precision}} {jnp.std(per_seed_mean):{precision}}'
+        return f'{jnp.mean(per_seed_mean):{precision}} ({jnp.std(per_seed_mean):{precision}})'
     print(yaml.dump(tree_map(print_fn, tree_of_stacks), default_flow_style=False))
 
 
 def evaluate(job_dir: Path,
+             results_file_name: str,
              scenario: Scenario,
-             mechanism_fns: Dict[str, MechanismFn],
+             mechanism_fns: Dict[str, CouterfactualFn],
              pseudo_oracles: Dict[str, AuxiliaryFn],
              num_batches_to_plot: int = 1,
              overwrite: bool = False) -> TestResult:
-    results_path = (job_dir / 'results.pickle')
+    results_path = (job_dir / results_file_name)
     if results_path.exists() and not overwrite:
         with open(results_path, mode='rb') as f:
             return pickle.load(f)
     parent_dists, joint_pmf = scenario.parent_dists, scenario.joint_pmf
     assert pseudo_oracles.keys() == parent_dists.keys()
     tests = {}
+    tests['pseudo_oracle_quality'] = pseudo_oracle_test(pseudo_oracles)
     for parent_name, parent_dist in parent_dists.items():
         tests[parent_name] = {}
         mechanism_fn = mechanism_fns[parent_name]
@@ -232,7 +253,7 @@ def evaluate(job_dir: Path,
 
             plot_counter += 1
 
-    with open(job_dir / 'results.pickle', mode='wb') as f:
+    with open(job_dir / results_file_name, mode='wb') as f:
         pickle.dump(results, f)
 
     return results

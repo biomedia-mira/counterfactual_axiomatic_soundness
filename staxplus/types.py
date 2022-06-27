@@ -1,10 +1,10 @@
 from typing import Any, Iterable, Mapping, NamedTuple, Sequence, Tuple, Union
 
 import jax.numpy as jnp
+import numpy as np
 from jax._src.random import KeyArray
 from optax import GradientTransformation, OptState, Params
 from typing_extensions import Protocol, TypeGuard
-import numpy as np
 
 KeyArray = KeyArray
 GradientTransformation = GradientTransformation

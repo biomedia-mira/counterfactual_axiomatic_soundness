@@ -1,9 +1,9 @@
-import math
 import pickle
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Callable
 
+import jax.numpy as jnp
 import jax.random as random
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,48 +14,76 @@ import tensorflow_datasets as tfds
 from jax.tree_util import tree_map
 from matplotlib.colors import hsv_to_rgb, rgb_to_hsv
 from numpy.typing import NDArray
-from numpyro.distributions import Bernoulli, Normal, TransformedDistribution, Uniform
-from numpyro.distributions.transforms import AffineTransform, ComposeTransform, SigmoidTransform
+from numpyro.distributions import Bernoulli, Normal, Uniform
 from skimage import morphology, transform
 from staxplus import Shape
 from tensorflow.keras import layers  # type: ignore
 from tqdm import tqdm
-import jax.numpy as jnp
+from typing_extensions import Protocol
+
 from datasets.morphomnist.measure import measure_image
 from datasets.morphomnist.morpho import ImageMorphology
-from datasets.utils import ConfoundingFn, Image, ParentDist, Scenario, get_simulated_intervention_datasets
+from datasets.utils import Image, ParentDist, Scenario, get_simulated_intervention_datasets
 from utils import image_gallery
 
 Array = NDArray[Any]
 
 
-def image_thumbs(images: NDArray[np.uint8], parents: Dict[str, NDArray[Any]]) -> NDArray[np.uint8]:
+class ConfoundingFn(Protocol):
+    def __call__(self, dataset: tf.data.Dataset, confound: bool = True) -> Tuple[NDArray[Any], Dict[str, NDArray[Any]]]:
+        ...
+
+
+def save_image_thumbs(path: str, images: NDArray[np.uint8], parents: Dict[str, NDArray[Any]]) -> None:
     order = np.argsort(parents['digit'], axis=-1)
     _image = image_gallery(images[order], num_images_to_display=128, decode_fn=lambda x: x)
     _image = np.repeat(_image, repeats=3, axis=-1) if _image.shape[-1] == 1 else _image
-    return _image
+    plt.imsave(path, _image)
+    return
 
 
 def get_dataset(base_data_dir: Path,
                 dataset_dir: Path,
                 confound: bool,
-                confounding_fn: ConfoundingFn) -> Tuple[Array, Dict[str, Array], Array, Dict[str, Array]]:
+                confounding_fn: ConfoundingFn,
+                joint_plot_fn: Callable[[Dict[str, Array]], sns.JointGrid]) \
+        -> Tuple[tf.data.Dataset, tf.data.Dataset, tf.data.Dataset, Dict[str, Array]]:
     dataset_path = dataset_dir / 'data.pickle'
     try:
         with open(dataset_path, 'rb') as f1:
-            train_images, train_parents, test_images, test_parents, = pickle.load(f1)
+            (train_images, train_parents,
+             test_images_uc, test_parents_uc,
+             test_images_c, test_parents_c) = pickle.load(f1)
     except FileNotFoundError:
         print('Dataset not found, creating new copy...')
         ds_train, ds_test = tfds.load('mnist', split=['train', 'test'], shuffle_files=False,
                                       data_dir=f'{str(base_data_dir)}/mnist', as_supervised=True)
         train_images, train_parents = confounding_fn(ds_train, confound=confound)
-        test_images, test_parents = confounding_fn(ds_test, confound=False)
+        test_images_uc, test_parents_uc = confounding_fn(ds_test, confound=False)
+        test_images_c, test_parents_c = confounding_fn(ds_test, confound=True)
+
         with open(dataset_path, 'wb') as f2:
-            pickle.dump((train_images, train_parents, test_images, test_parents), f2)
-    return train_images, train_parents, test_images, test_parents
+            _data = (train_images, train_parents,
+                     test_images_uc, test_parents_uc,
+                     test_images_c, test_parents_c)
+            pickle.dump(_data, f2)
+
+    joint_plot_fn(train_parents).savefig(dataset_dir / 'joint_hist_train.png')
+    joint_plot_fn(test_parents_uc).savefig(dataset_dir / 'joint_hist_test_unconfounded.png')
+    joint_plot_fn(test_parents_c).savefig(dataset_dir / 'joint_hist_test_confounded.png')
+
+    save_image_thumbs(str(dataset_dir / 'train_images.png'), train_images, train_parents)
+    save_image_thumbs(str(dataset_dir / 'unconfounded_test_images.png'), test_images_uc, test_parents_uc)
+    save_image_thumbs(str(dataset_dir / 'confounded_test_images.png'), test_images_c, test_parents_c)
+
+    train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_parents))
+    test_dataset_uc = tf.data.Dataset.from_tensor_slices((test_images_uc, test_parents_uc))
+    test_dataset_c = tf.data.Dataset.from_tensor_slices((test_images_c, test_parents_c))
+
+    return train_dataset, test_dataset_uc, test_dataset_c, train_parents
 
 
-@lru_cache(maxsize=None)
+@ lru_cache(maxsize=None)
 def _get_disk(radius: int, scale: int) -> Any:
     mag_radius = scale * radius
     mag_disk = morphology.disk(mag_radius, dtype=np.float64)  # type: ignore
@@ -113,11 +141,11 @@ def set_hue_and_saturation(image: Image, hue: float, saturation: float = 1.) -> 
     hsv_image[..., 1] = saturation
     return np.clip(hsv_to_rgb(hsv_image) * 255., 0, 255).astype(np.uint8)
 
-##
+# Scenarios
 
 
 def digit_thickness(data_dir: Path, confound: bool, scale: float, outlier_prob: float) \
-        -> Tuple[str, Array, Dict[str, Array], Array, Dict[str, Array], Dict[str, ParentDist], Shape]:
+        -> Tuple[str, tf.data.Dataset, tf.data.Dataset, tf.data.Dataset, Dict[str, ParentDist], Shape]:
     scenario_name = 'digit_thickness'
     dataset_name = f'confounded_scale_{scale:.2f}_outlier_prob_{outlier_prob:.3f}' if confound else 'unconfounded'
     dataset_dir = data_dir / scenario_name / dataset_name
@@ -139,28 +167,23 @@ def digit_thickness(data_dir: Path, confound: bool, scale: float, outlier_prob: 
         _digit = digit if confound else np.array(random.shuffle(k4, digit))
         thickness = digit_thickness(digit=_digit)
         images = np.array([set_thickness(image, t)
-                          for (image, _), t in tqdm(zip(dataset.as_numpy_iterator(), thickness))])
+                           for (image, _), t in tqdm(zip(dataset.as_numpy_iterator(), thickness))])
         parents = {'digit': digit, 'thickness': thickness}
         return images, parents
 
-    def joint_plot(parents: Dict[str, NDArray[Any]]) -> sns.JointGrid:
+    def joint_plot_fn(parents: Dict[str, NDArray[Any]]) -> sns.JointGrid:
         data = pd.DataFrame({'digit': parents['digit'], 'thickness': parents['thickness']})
         grid = sns.JointGrid(x="digit", y="thickness", data=data, ylim=(1.5, 6.), space=0)
         grid = grid.plot_joint(sns.boxplot, hue=np.zeros_like(data['digit']),
-                               boxprops={'alpha': .5, 'edgecolor': 'black'},
+                               boxprops={'alpha': .5, 'edgecolor': 'purple'},
                                flierprops={'marker': 'x'})
         grid.ax_joint.legend().remove()
         sns.histplot(x=parents['digit'], discrete=True, ax=grid.ax_marg_x)
         sns.kdeplot(y=parents['thickness'], ax=grid.ax_marg_y, clip=(1.5, 6.), fill=True)
         return grid
 
-    train_images, train_parents, test_images, test_parents \
-        = get_dataset(data_dir, dataset_dir, confound, confounding_fn)
-
-    joint_plot(train_parents).savefig(dataset_dir / 'joint_hist_train.png')
-    joint_plot(test_parents).savefig(dataset_dir / 'joint_hist_test.png')
-    plt.imsave(str(dataset_dir / 'train_images.png'), image_thumbs(train_images, train_parents))
-    plt.imsave(str(dataset_dir / 'test_images.png'), image_thumbs(test_images, test_parents))
+    train_dataset, test_dataset_uc, test_dataset_c, train_parents \
+        = get_dataset(data_dir, dataset_dir, confound, confounding_fn, joint_plot_fn)
 
     parent_dists \
         = {'digit': ParentDist(name='digit',
@@ -175,11 +198,11 @@ def digit_thickness(data_dir: Path, confound: bool, scale: float, outlier_prob: 
                                     samples=train_parents['thickness'],
                                     oracle=measure_thickness)}
     input_shape = (-1, 28, 28, 1)
-    return dataset_name, train_images, train_parents, test_images, test_parents, parent_dists, input_shape
+    return dataset_name, train_dataset, test_dataset_uc, test_dataset_c, parent_dists, input_shape
 
 
 def thickness_hue(data_dir: Path, confound: bool, scale: float, outlier_prob: float) \
-        -> Tuple[str, Array, Dict[str, Array], Array, Dict[str, Array], Dict[str, ParentDist], Shape]:
+        -> Tuple[str, tf.data.Dataset, tf.data.Dataset, tf.data.Dataset, Dict[str, ParentDist], Shape]:
     scenario_name = 'thickness_hue'
     dataset_name = f'confounded_scale_{scale:.2f}_outlier_prob_{outlier_prob:.3f}' if confound else 'unconfounded'
     dataset_dir = data_dir / scenario_name / dataset_name
@@ -208,19 +231,14 @@ def thickness_hue(data_dir: Path, confound: bool, scale: float, outlier_prob: fl
         parents = {'digit': digit, 'thickness': thickness, 'hue': hue}
         return images, parents
 
-    def joint_plot(parents: Dict[str, NDArray[Any]]) -> sns.JointGrid:
+    def joint_plot_fn(parents: Dict[str, NDArray[Any]]) -> sns.JointGrid:
         data = pd.DataFrame({'thickness': parents['thickness'], 'hue': parents['hue']})
-        g = sns.jointplot(data=data, x='thickness', y='hue', kind="kde", ylim=(0, 1.), xlim=(1.5, 6.))
-        g.plot_joint(sns.scatterplot)
-        return g
+        grid = sns.jointplot(data=data, x='thickness', y='hue', kind="kde", ylim=(0, 1.), xlim=(1.5, 6.))
+        grid.plot_joint(sns.scatterplot)
+        return grid
 
-    train_images, train_parents, test_images, test_parents \
-        = get_dataset(data_dir, dataset_dir, confound, confounding_fn)
-
-    joint_plot(train_parents).savefig(dataset_dir / 'joint_hist_train.png')
-    joint_plot(test_parents).savefig(dataset_dir / 'joint_hist_test.png')
-    plt.imsave(str(dataset_dir / 'train_images.png'), image_thumbs(train_images, train_parents))
-    plt.imsave(str(dataset_dir / 'test_images.png'), image_thumbs(test_images, test_parents))
+    train_dataset, test_dataset_uc, test_dataset_c, train_parents \
+        = get_dataset(data_dir, dataset_dir, confound, confounding_fn, joint_plot_fn)
 
     parent_dists \
         = {'digit': ParentDist(name='digit',
@@ -241,11 +259,11 @@ def thickness_hue(data_dir: Path, confound: bool, scale: float, outlier_prob: fl
                              samples=train_parents['hue'],
                              oracle=measure_hue)}
     input_shape = (-1, 28, 28, 3)
-    return dataset_name, train_images, train_parents, test_images, test_parents, parent_dists, input_shape
+    return dataset_name, train_dataset, test_dataset_uc, test_dataset_c, parent_dists, input_shape
 
 
 def digit_hue(data_dir: Path, confound: bool, scale: float, outlier_prob: float) \
-        -> Tuple[str, Array, Dict[str, Array], Array, Dict[str, Array], Dict[str, ParentDist], Shape]:
+        -> Tuple[str, tf.data.Dataset, tf.data.Dataset, tf.data.Dataset, Dict[str, ParentDist], Shape]:
     scenario_name = 'digit_hue'
     dataset_name = f'confounded_scale_{scale:.2f}_outlier_prob_{outlier_prob:.3f}' if confound else 'unconfounded'
     dataset_dir = data_dir / scenario_name / dataset_name
@@ -257,7 +275,7 @@ def digit_hue(data_dir: Path, confound: bool, scale: float, outlier_prob: float)
         loc = digit / 10. + .05
         hue_dist = Normal(loc, scale)
         mixture_probs = Bernoulli(probs=1. - outlier_prob).sample(k1, sample_shape)
-        background_dist = Uniform(0., 1.)
+        background_dist = Uniform(0.,  1.)
         hue = hue_dist.sample(k2) * mixture_probs + (1. - mixture_probs) * background_dist.sample(k3, sample_shape)
         return np.array(hue)
 
@@ -270,24 +288,21 @@ def digit_hue(data_dir: Path, confound: bool, scale: float, outlier_prob: float)
         parents = {'digit': digit, 'hue': hue}
         return images, parents
 
-    def joint_plot(parents: Dict[str, NDArray[Any]]) -> sns.JointGrid:
+    def joint_plot_fn(parents: Dict[str, NDArray[Any]]) -> sns.JointGrid:
         data = pd.DataFrame({'digit': parents['digit'], 'hue': parents['hue']})
         grid = sns.JointGrid(x="digit", y="hue", data=data, ylim=(0, 1.), space=0)
         grid = grid.plot_joint(sns.boxplot, hue=np.zeros_like(data['digit']),
                                boxprops={'alpha': .5, 'edgecolor': 'black'},
-                               flierprops={'marker': 'x'})
+                               flierprops={'marker': 'x', 'zorder': -1,
+                                           'markerfacecolor': 'black',  # e3b23c
+                                           'markeredgecolor': 'black'})
         grid.ax_joint.legend().remove()
         sns.histplot(x=parents['digit'], discrete=True, ax=grid.ax_marg_x)
-        sns.kdeplot(y=parents['hue'], ax=grid.ax_marg_y, clip=(0.0, 1.), fill=True)
+        sns.kdeplot(y=parents['hue'], ax=grid.ax_marg_y, clip=(0.0, 1.), fill=True, bw_adjust=1.5)
         return grid
 
-    train_images, train_parents, test_images, test_parents \
-        = get_dataset(data_dir, dataset_dir, confound, confounding_fn)
-
-    joint_plot(train_parents).savefig(dataset_dir / 'joint_hist_train.png')
-    joint_plot(test_parents).savefig(dataset_dir / 'joint_hist_test.png')
-    plt.imsave(str(dataset_dir / 'train_images.png'), image_thumbs(train_images, train_parents))
-    plt.imsave(str(dataset_dir / 'test_images.png'), image_thumbs(test_images, test_parents))
+    train_dataset, test_dataset_uc, test_dataset_c, train_parents \
+        = get_dataset(data_dir, dataset_dir, confound, confounding_fn, joint_plot_fn)
 
     parent_dists \
         = {'digit': ParentDist(name='digit',
@@ -302,11 +317,11 @@ def digit_hue(data_dir: Path, confound: bool, scale: float, outlier_prob: float)
                              samples=train_parents['hue'],
                              oracle=measure_hue)}
     input_shape = (-1, 28, 28, 3)
-    return dataset_name, train_images, train_parents, test_images, test_parents, parent_dists, input_shape
+    return dataset_name, train_dataset, test_dataset_uc, test_dataset_c, parent_dists, input_shape
 
 
 def digit_hue_saturation(data_dir: Path, confound: bool, scale: float, outlier_prob: float) \
-        -> Tuple[str, Array, Dict[str, Array], Array, Dict[str, Array], Dict[str, ParentDist], Shape]:
+        -> Tuple[str, tf.data.Dataset, tf.data.Dataset, tf.data.Dataset, Dict[str, ParentDist], Shape]:
     scenario_name = 'digit_hue_saturation'
     dataset_name = f'confounded_scale_{scale:.2f}_outlier_prob_{outlier_prob:.3f}' if confound else 'unconfounded'
     dataset_dir = data_dir / scenario_name / dataset_name
@@ -328,7 +343,8 @@ def digit_hue_saturation(data_dir: Path, confound: bool, scale: float, outlier_p
         saturation_dist = Normal(loc, scale)
         is_inlier = Bernoulli(probs=1. - outlier_prob).sample(k6, sample_shape)
         background_dist = Uniform(.3, 1.)
-        saturation = saturation_dist.sample(k7) * is_inlier + (1. - is_inlier) * background_dist.sample(k8, sample_shape)
+        saturation = saturation_dist.sample(k7) * is_inlier + (1. - is_inlier) * \
+            background_dist.sample(k8, sample_shape)
         return np.array(hue), np.array(saturation)
 
     def confounding_fn(dataset: tf.data.Dataset, confound: bool = True) -> Tuple[Array, Dict[str, Array]]:
@@ -339,7 +355,7 @@ def digit_hue_saturation(data_dir: Path, confound: bool, scale: float, outlier_p
         parents = {'digit': digit, 'hue': hue, 'saturation': saturation}
         return images, parents
 
-    def joint_plot(parents: Dict[str, NDArray[Any]]) -> Tuple[sns.JointGrid, sns.JointGrid]:
+    def joint_plot_fn(parents: Dict[str, NDArray[Any]]) -> Tuple[sns.JointGrid, sns.JointGrid]:
         data = pd.DataFrame({'digit': parents['digit'], 'hue': parents['hue']})
         g1 = sns.JointGrid(x="digit", y="hue", data=data, ylim=(0, 1.), space=0)
         g1 = g1.plot_joint(sns.boxplot, hue=np.zeros_like(data['digit']),
@@ -355,17 +371,17 @@ def digit_hue_saturation(data_dir: Path, confound: bool, scale: float, outlier_p
         g2.ax_joint.legend().remove()
         return g1, g2
 
-    train_images, train_parents, test_images, test_parents \
-        = get_dataset(data_dir, dataset_dir, confound, confounding_fn)
+    train_dataset, test_dataset_uc, test_dataset_c, train_parents \
+        = get_dataset(data_dir, dataset_dir, confound, confounding_fn, joint_plot_fn)
 
-    g1, g2 = joint_plot(train_parents)
-    g1.savefig(dataset_dir / 'joint_hist_digt_hue_train.png')
-    g2.savefig(dataset_dir / 'joint_hist_hue_saturation_train.png')
-    g1, g2 = joint_plot(test_parents)
-    g1.savefig(dataset_dir / 'joint_hist_digit_hue_test.png')
-    g2.savefig(dataset_dir / 'joint_hist_hue_saturation_test.png')
-    plt.imsave(str(dataset_dir / 'train_images.png'), image_thumbs(train_images, train_parents))
-    plt.imsave(str(dataset_dir / 'test_images.png'), image_thumbs(test_images, test_parents))
+    # g1, g2 = joint_plot(train_parents)
+    # g1.savefig(dataset_dir / 'joint_hist_digt_hue_train.png')
+    # g2.savefig(dataset_dir / 'joint_hist_hue_saturation_train.png')
+    # g1, g2 = joint_plot(test_parents)
+    # g1.savefig(dataset_dir / 'joint_hist_digit_hue_test.png')
+    # g2.savefig(dataset_dir / 'joint_hist_hue_saturation_test.png')
+    # plt.imsave(str(dataset_dir / 'train_images.png'), image_thumbs(train_images, train_parents))
+    # plt.imsave(str(dataset_dir / 'test_images.png'), image_thumbs(test_images, test_parents))
 
     parent_dists \
         = {'digit': ParentDist(name='digit',
@@ -385,7 +401,7 @@ def digit_hue_saturation(data_dir: Path, confound: bool, scale: float, outlier_p
                                     is_invertible=True,
                                     samples=train_parents['saturation'])}
     input_shape = (-1, 28, 28, 3)
-    return dataset_name, train_images, train_parents, test_images, test_parents, parent_dists, input_shape
+    return dataset_name, train_dataset, test_dataset_uc, test_dataset_c, parent_dists, input_shape
 
 
 def confoudned_mnist(scenario_name: str, data_dir: Path, confound: bool, scale: float, outlier_prob: float) \
@@ -400,12 +416,10 @@ def confoudned_mnist(scenario_name: str, data_dir: Path, confound: bool, scale: 
         raise NotImplementedError
     else:
         scenario_fn = scenario_fns[scenario_name]
-    dataset_name, train_images, train_parents, test_images, test_parents, parent_dists, input_shape \
+    dataset_name, train_dataset, test_dataset_uc, test_dataset_c, parent_dists, input_shape \
         = scenario_fn(data_dir, confound, scale, outlier_prob)
 
-    train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_parents))
-    test_dataset = tf.data.Dataset.from_tensor_slices((test_images, test_parents))
-    train_data_dict, pmf = get_simulated_intervention_datasets(train_dataset, train_parents, parent_dists, num_bins=5)
+    train_data_dict, pmf = get_simulated_intervention_datasets(train_dataset, parent_dists, num_bins=5)
     if not confound:
         train_data_dict = {key: train_dataset for key in train_data_dict.keys()}
 
@@ -427,6 +441,7 @@ def confoudned_mnist(scenario_name: str, data_dir: Path, confound: bool, scale: 
         return augment_fn(image), parents
 
     train_data = tree_map(lambda ds: ds.map(augment).map(encode), train_data_dict)
-    test_data = test_dataset.map(encode)
+    test_data_uc = test_dataset_uc.map(encode)
+    test_data_c = test_dataset_c.map(encode)
 
-    return dataset_name, Scenario(train_data, test_data, parent_dists, input_shape, pmf)
+    return dataset_name, Scenario(train_data, test_data_uc, test_data_c, parent_dists, input_shape, pmf)

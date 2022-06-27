@@ -27,19 +27,24 @@ def calc_bernoulli_log_pdf(image: Array, recon: Array, eps: float = 1e-12) -> Ar
     return jnp.sum(image * jnp.log(recon + eps) + (1. - image) * jnp.log(1. - recon + eps))
 
 
-@vmap
-def calc_normal_log_pdf(image: Array, recon: Array, variance: float = .1) -> Array:
-    return -.5 * jnp.sum((image - recon) ** 2. / variance + jnp.log(2 * jnp.pi * variance))
+# unfortunetly vmap does not support named arguemnts so I have to do this
+def get_calc_normal_log_pdf(variance: float = .1):
+    @vmap
+    def calc_normal_log_pdf(image: Array, recon: Array) -> Array:
+        return -.5 * jnp.sum((image - recon) ** 2. / variance + jnp.log(2 * jnp.pi * variance))
+    return calc_normal_log_pdf
 
 
 def c_vae(encoder: StaxLayer,
           decoder: StaxLayer,
           input_range: Tuple[float, float] = (0., 1.),
           beta: float = 1.,
-          bernoulli_ll: bool = True) -> Tuple[Callable[[KeyArray, Tuple[Shape, Shape]], Tuple[Shape, Params]],
-                                              Callable[[Params, Any, KeyArray], Tuple[Array, Array, Dict[str, Array]]]]:
+          bernoulli_ll: bool = True,
+          normal_ll_variance: float = .1) \
+    -> Tuple[Callable[[KeyArray, Tuple[Shape, Shape]], Tuple[Shape, Params]],
+             Callable[[Params, Any, KeyArray], Tuple[Array, Array, Dict[str, Array]]]]:
     """ Standard VAE with standard normal latent prior/posterior and Bernoulli or normal likelihood. """
-    calc_ll = calc_bernoulli_log_pdf if bernoulli_ll else calc_normal_log_pdf
+    calc_ll = calc_bernoulli_log_pdf if bernoulli_ll else get_calc_normal_log_pdf(variance=normal_ll_variance)
     enc_init_fn, enc_apply_fn = encoder
     dec_init_fn, dec_apply_fn = decoder
 

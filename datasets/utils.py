@@ -17,11 +17,6 @@ from typing_extensions import Protocol
 Image = NDArray[np.uint8]
 
 
-class ConfoundingFn(Protocol):
-    def __call__(self, dataset: tf.data.Dataset, confound: bool = True) -> Tuple[NDArray[Any], Dict[str, NDArray[Any]]]:
-        ...
-
-
 class Oracle(Protocol):
     def __call__(self, image: Image) -> Union[int, float]:
         ...
@@ -76,23 +71,24 @@ def get_joint_pmf(histogram: NDArray[np.int64], bin_edges_dict: Dict[str, Union[
 
 class Scenario(NamedTuple):
     train_data: Dict[FrozenSet[str], tf.data.Dataset]
-    test_data: tf.data.Dataset
+    test_data_unconfounded: tf.data.Dataset
+    test_data_confounded: tf.data.Dataset
     parent_dists: Dict[str, ParentDist]
     input_shape: Shape
     joint_pmf: PMF
 
 
-def make_histogram(parents: Dict[str, NDArray[Any]],
-                   parent_dists: Dict[str, ParentDist],
+def make_histogram(parent_dists: Dict[str, ParentDist],
                    num_bins: int = 10) -> Tuple[NDArray[np.int64], NDArray[np.int64], PMF]:
     indicator = {}
     bin_edges_dict = {}
-    for (parent_name, parent_dist), parent in zip(parent_dists.items(), parents.values()):
+    for parent_name, parent_dist in parent_dists.items():
+        parent = parent_dist.samples
         if parent_dist.is_discrete:
             _parent, dim = parent, parent_dist.dim
             bin_edges_dict[parent_name] = dim
         else:
-            _, bin_edges = np.histogram(parents[parent_name], bins=num_bins)
+            _, bin_edges = np.histogram(parent, bins=num_bins)
             _parent, dim = np.digitize(parent, (*bin_edges[:-1], bin_edges[-1] + 1)) - 1, num_bins
             bin_edges_dict[parent_name] = bin_edges
         indicator[parent_name] = np.array([_parent == i for i in range(dim)])
@@ -103,7 +99,7 @@ def make_histogram(parents: Dict[str, NDArray[Any]],
     index_map = np.argwhere(np.moveaxis(index_map, -1, 0))[..., 1:]
 
     if np.any(histogram == 0):
-        message = '\n'.join([', '.join([f'{parent} == {val[i]}' for i, parent in enumerate(parents)])
+        message = '\n'.join([', '.join([f'{parent} == {val[i]}' for i, parent in enumerate(parent_dists)])
                             for val in np.argwhere(histogram == 0)])
         warnings.warn(f'Distribution does not have full support in:\n{message}')
 
@@ -111,11 +107,11 @@ def make_histogram(parents: Dict[str, NDArray[Any]],
 
 
 def get_simulated_intervention_datasets(dataset: tf.data.Dataset,
-                                        parents: Dict[str, NDArray[Any]],
                                         parent_dists: Dict[str, ParentDist],
                                         num_bins: int = 10) \
         -> Tuple[Dict[FrozenSet[str], tf.data.Dataset], PMF]:
-    histogram, index_map, pmf = make_histogram(parents, parent_dists, num_bins=num_bins)
+    histogram, index_map, pmf = make_histogram(parent_dists, num_bins=num_bins)
+    parents = {name: parent_dist.samples for name, parent_dist in parent_dists.items()}
     joint_dist = histogram / np.sum(histogram)
 
     datasets = {}

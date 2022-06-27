@@ -1,0 +1,7 @@
+{
+    "name": "vae",
+    "bernoulli_ll": true,
+    "beta": 2.0,
+    "partial_mechanisms": false,
+    "from_joint": false
+}

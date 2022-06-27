@@ -10,28 +10,20 @@ from staxplus import (Array, ArrayTree, GradientTransformation, KeyArray, Model,
                       c_vae)
 from staxplus.types import is_shape
 
-from models.utils import AuxiliaryFn, CouterfactualFn, concat_parents, is_inputs
+from models.utils import AuxiliaryFn, MechanismFn, concat_parents, is_inputs
 
 
-def conditional_vae(do_parent_name: str,
-                    parent_dists: Dict[str, ParentDist],
-                    pseudo_oracles: Dict[str, AuxiliaryFn],
+def conditional_vae(parent_dists: Dict[str, ParentDist],
                     vae_encoder: StaxLayer,
                     vae_decoder: StaxLayer,
+                    pseudo_oracles: Dict[str, AuxiliaryFn],
                     bernoulli_ll: bool = True,
-                    normal_ll_variance: float = 1.,
                     beta: float = 1.,
-                    from_joint: bool = False) -> Tuple[Model, Callable[[Params], CouterfactualFn]]:
-    assert do_parent_name == 'all'
+                    from_joint: bool = False) -> Tuple[Model, Callable[[Params], MechanismFn]]:
     parent_dims = tree_map(lambda x: x.dim, parent_dists)
     assert len(parent_dims) > 0
     source_dist = frozenset() if from_joint else frozenset(parent_dists.keys())
-    _init_fn, _apply_fn = c_vae(vae_encoder,
-                                vae_decoder,
-                                input_range=(-1., 1.),
-                                beta=beta,
-                                bernoulli_ll=bernoulli_ll,
-                                normal_ll_variance=normal_ll_variance)
+    _init_fn, _apply_fn = c_vae(vae_encoder, vae_decoder, input_range=(-1., 1.), bernoulli_ll=bernoulli_ll, beta=beta)
 
     def init_fn(rng: KeyArray, input_shape: ShapeTree) -> Params:
         assert is_shape(input_shape)
@@ -66,7 +58,7 @@ def conditional_vae(do_parent_name: str,
         params = optax.apply_updates(params, updates)
         return params, opt_state, loss, outputs
 
-    def get_mechanism_fn(params: Params) -> CouterfactualFn:
+    def get_mechanism_fn(params: Params) -> MechanismFn:
         def mechanism_fn(rng: KeyArray,
                          image: Array,
                          parents: Dict[str, Array],
