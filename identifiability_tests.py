@@ -19,7 +19,7 @@ from models.utils import AuxiliaryFn, CouterfactualFn
 from staxplus import Array, KeyArray
 from utils import flatten_nested_dict
 import yaml
-
+import tensorflow as tf
 
 TestResult = Union[Dict[str, Array], Dict[str, 'TestResult']]
 Plots = Union[NDArray[np.uint8], Dict[str, NDArray[np.uint8]]]
@@ -59,7 +59,7 @@ def pseudo_oracle_test(pseudo_oracles: Dict[str, AuxiliaryFn]) -> Test:
     return test
 
 
-def effectiveness_test(mechanism_fn: CouterfactualFn,
+def effectiveness_test(counterfactual_fn: CouterfactualFn,
                        parent_dist: ParentDist,
                        pseudo_oracles: Dict[str, AuxiliaryFn],
                        joint_pmf: PMF,
@@ -104,12 +104,12 @@ def effectiveness_test(mechanism_fn: CouterfactualFn,
     def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Plots]:
         do_parent = parent_dist.sample(rng, (image.shape[0],))
         do_parents = {**parents, parent_name: do_parent}
-        do_image = mechanism_fn(rng, image, parents, do_parents)
+        do_image = counterfactual_fn(rng, image, parents, do_parents)
         test_result = {}
         for _parent_name, _parent in do_parents.items():
             _, test_result[_parent_name] = pseudo_oracles[_parent_name](image=do_image, parent=_parent)
             test_result[_parent_name]['target'] = _parent
-        do_nothing = mechanism_fn(rng, image, parents, parents)
+        do_nothing = counterfactual_fn(rng, image, parents, parents)
         plots = {'default': _plot(image, do_nothing, do_image, parents, do_parents, PlotMode.DEFAULT),
                  'low_density': _plot(image, do_nothing, do_image, parents, do_parents, PlotMode.LOW_DENSITY),
                  'high_density': _plot(image, do_nothing, do_image, parents, do_parents, PlotMode.HIGH_DENSITY)}
@@ -117,13 +117,13 @@ def effectiveness_test(mechanism_fn: CouterfactualFn,
     return test
 
 
-def composition_test(mechanism_fn: CouterfactualFn,
+def composition_test(counterfactual_fn: CouterfactualFn,
                      horizon: int = 10) -> Test:
     def test(rng: KeyArray, image: Array, parents: Dict[str, Array]) -> Tuple[TestResult, Plots]:
         image_sequence = [image]
         do_image = image
         for _ in range(horizon):
-            do_image = mechanism_fn(rng, do_image, parents, parents)
+            do_image = counterfactual_fn(rng, do_image, parents, parents)
             image_sequence.append(do_image)
         test_result = {f'distance_{i:d}': l1(image, _do_image) for i, _do_image in enumerate(image_sequence)}
         image_sequece = np.array(decode_fn(jnp.moveaxis(jnp.array(image_sequence), 0, 1))).astype(np.uint8)
@@ -133,7 +133,7 @@ def composition_test(mechanism_fn: CouterfactualFn,
     return test
 
 
-def reversibility_test(mechanism_fn: CouterfactualFn,
+def reversibility_test(counterfactual_fn: CouterfactualFn,
                        parent_dist: ParentDist,
                        cycle_length: int = 2,
                        num_cycles: int = 1) -> Test:
@@ -147,7 +147,7 @@ def reversibility_test(mechanism_fn: CouterfactualFn,
         do_image = image
         for do_parent in list(do_parent_cycle):
             do_parents = {**parents, parent_name: do_parent}
-            do_image = mechanism_fn(rng, do_image, parents, do_parents)
+            do_image = counterfactual_fn(rng, do_image, parents, do_parents)
             image_sequence.append(do_image)
             parents = do_parents
         output = {f'distance_{i:d}': l1(image, _do_image) for i, _do_image in enumerate(image_sequence)}
@@ -158,7 +158,7 @@ def reversibility_test(mechanism_fn: CouterfactualFn,
     return test
 
 
-def commutativity_test(mechanism_fns: Dict[str, CouterfactualFn],
+def commutativity_test(counterfactual_fn: Dict[str, CouterfactualFn],
                        parent_dist_1: ParentDist,
                        parent_dist_2: ParentDist,
                        sep_width: int = 1, ) -> Test:
@@ -169,7 +169,7 @@ def commutativity_test(mechanism_fns: Dict[str, CouterfactualFn],
             _image, _parents = image, parents
             image_sequence.append(image)
             for parent_dist in parent_order:
-                mechanism_fn = mechanism_fns[parent_dist.name]
+                mechanism_fn = counterfactual_fn[parent_dist.name]
                 _do_parents = {**_parents, parent_dist.name: parent_dist.sample(rng, (image.shape[0],))}
                 _image = mechanism_fn(rng, _image, _parents, _do_parents)
                 _parents = _do_parents
@@ -209,34 +209,31 @@ def print_test_results(trees: Iterable[Any]) -> None:
     print(yaml.dump(tree_map(print_fn, tree_of_stacks), default_flow_style=False))
 
 
-def evaluate(job_dir: Path,
-             results_file_name: str,
-             scenario: Scenario,
-             mechanism_fns: Dict[str, CouterfactualFn],
-             pseudo_oracles: Dict[str, AuxiliaryFn],
-             num_batches_to_plot: int = 1,
-             overwrite: bool = False) -> TestResult:
-    results_path = (job_dir / results_file_name)
-    if results_path.exists() and not overwrite:
-        with open(results_path, mode='rb') as f:
-            return pickle.load(f)
-    parent_dists, joint_pmf = scenario.parent_dists, scenario.joint_pmf
-    assert pseudo_oracles.keys() == parent_dists.keys()
+def get_tests(parent_dists: Dict[str, ParentDist],
+              joint_pmf: PMF,
+              pseudo_oracles: Dict[str, AuxiliaryFn],
+              counterfactual_fns: Dict[str, CouterfactualFn]) -> Dict[str, Union[Test, Dict[str, Test]]]:
     tests = {}
     tests['pseudo_oracle_quality'] = pseudo_oracle_test(pseudo_oracles)
     for parent_name, parent_dist in parent_dists.items():
         tests[parent_name] = {}
-        mechanism_fn = mechanism_fns[parent_name]
+        mechanism_fn = counterfactual_fns[parent_name]
         tests[parent_name]['effectiveness'] = effectiveness_test(mechanism_fn, parent_dist, pseudo_oracles, joint_pmf)
         tests[parent_name]['composition'] = composition_test(mechanism_fn)
         if parent_dist.is_invertible:
             tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_dist, num_cycles=5)
     for p1, p2 in itertools.combinations(parent_dists.values(), 2):
-        tests[f'{p1.name}_{p2.name}_commutativity'] = commutativity_test(mechanism_fns, p1, p2)
+        tests[f'{p1.name}_{p2.name}_commutativity'] = commutativity_test(counterfactual_fns, p1, p2)
+    return tests
 
+
+def run_tests_on_data(tests: Dict[str, Union[Test, Dict[str, Test]]],
+                      dataset: tf.data.Dataset,
+                      num_batches_to_plot: int = 1) -> Tuple[TestResult, Dict[str, NDArray[Any]]]:
     rng = random.PRNGKey(0)
     results: TestResult = {}
-    test_set = to_numpy_iterator(scenario.test_data, 512, drop_remainder=False)
+    figures: Dict[str, NDArray[Any]] = {}
+    test_set = to_numpy_iterator(dataset, 512, drop_remainder=False)
     plot_counter = 0
     for image, parents in tqdm(test_set):
         rng, _ = jax.random.split(rng)
@@ -245,15 +242,42 @@ def evaluate(job_dir: Path,
         output, plots = [tree_unflatten(treedef, [el[i] for el in flat]) for i in (0, 1)]
         results = output if not results else tree_map(lambda x, y: jnp.concatenate((x, y)), results, output)
         if plot_counter < num_batches_to_plot:
-            for key, image in flatten_nested_dict(plots).items():
-                path = job_dir / 'plots' / ('_'.join(key) + f'_{plot_counter:d}.png')
-                path.parent.mkdir(parents=True, exist_ok=True)
-                image = image if image.shape[-1] == 3 else np.repeat(image, repeats=3, axis=-1)
-                plt.imsave(str(path), image)
-
+            for key, fig in flatten_nested_dict(plots).items():
+                fig = fig if fig.shape[-1] == 3 else np.repeat(fig, repeats=3, axis=-1)
+                figures[('_'.join(key) + f'_{plot_counter:d}.png')] = fig
             plot_counter += 1
+    return results, figures
 
-    with open(job_dir / results_file_name, mode='wb') as f:
+
+def evaluate(job_dir: Path,
+             scenario: Scenario,
+             counterfactual_fns: Dict[str, CouterfactualFn],
+             pseudo_oracles: Dict[str, AuxiliaryFn],
+             pseudo_oracles_c: Dict[str, AuxiliaryFn],
+             num_batches_to_plot: int = 1,
+             overwrite: bool = False) -> TestResult:
+    results_path = (job_dir / 'results.pickle')
+    if results_path.exists() and not overwrite:
+        with open(results_path, mode='rb') as f:
+            return pickle.load(f)
+    parent_dists, joint_pmf = scenario.parent_dists, scenario.joint_pmf
+    assert pseudo_oracles.keys() == parent_dists.keys()
+    tests_uc = get_tests(parent_dists, joint_pmf, pseudo_oracles, counterfactual_fns)
+    tests_c = get_tests(parent_dists, joint_pmf, pseudo_oracles_c, counterfactual_fns)
+    test_set_uc, test_set_c = scenario.test_data_unconfounded, scenario.test_data_confounded
+
+    results = {}
+    for test_set_name, test_set in zip(('unconfounded_test_set', 'confounded_test_set'), (test_set_uc, test_set_c)):
+        results[test_set_name] = {}
+        for pseudo_oracle_name, tests in zip(('pseudo_oracles', 'pseudo_oracles_realistic'), (tests_uc, tests_c)):
+            _results, figures = run_tests_on_data(tests, test_set, num_batches_to_plot)
+            results[test_set_name][pseudo_oracle_name] = _results
+            for figure_name, figure in figures.items():
+                path = job_dir / Path('plots') / Path(test_set_name) / Path(pseudo_oracle_name) / Path(figure_name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                plt.imsave(str(path), figure)
+
+    with open(job_dir / 'results.pickle', mode='wb') as f:
         pickle.dump(results, f)
 
     return results

@@ -180,7 +180,6 @@ def main(job_dir: Path,
          data_config_path: Path,
          model_config_path: Path,
          seeds: List[int],
-         use_realistic_pseduo_oracles: bool = False,
          overwrite: bool = False) -> None:
 
     scenario_name, dataset_name, scenario_unconfounded, scenario = get_data(data_dir, data_config_path)
@@ -215,14 +214,9 @@ def main(job_dir: Path,
                                                     train_config=train_config,
                                                     from_joint=from_joint,
                                                     overwrite=overwrite)
-        if use_realistic_pseduo_oracles:
-            result_file = 'results_c'
-            _pseudo_oracles = pseudo_oracles_c
-        else:
-            result_file = 'results'
-            _pseudo_oracles = pseudo_oracles
-        results.append(evaluate(seed_dir, result_file, scenario,
-                       counterfactual_fns, _pseudo_oracles, overwrite=overwrite))
+
+        results.append(evaluate(seed_dir, scenario, counterfactual_fns,
+                       pseudo_oracles, pseudo_oracles_c, overwrite=True))
 
     print(experiment_dir)
     print_test_results(results)
@@ -255,11 +249,6 @@ if __name__ == '__main__':
     parser.add_argument('--seeds',
                         nargs='+',
                         type=int, help='List of random seeds.')
-    parser.add_argument('--use_realistic_pseduo_oracles',
-                        action='store_true',
-                        help='''whether to evaluate the model using pseudo-oracles trained from confounded data, which is
-                         deconfounded using a simulated intervention, If False, uses pseudo-oracles trained from
-                         data generated without any confounding.''')
     parser.add_argument('--overwrite',
                         action='store_true',
                         help='whether to overwrite an existing run')
@@ -276,6 +265,5 @@ if __name__ == '__main__':
              data_config_path=data_config_path,
              model_config_path=model_config_path,
              seeds=args.seeds,
-             use_realistic_pseduo_oracles=args.use_realistic_pseduo_oracles,
              overwrite=args.overwrite,
              )
