@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import optax
-
+import tensorflow as tf
 from jax.example_libraries.stax import (Conv, Dense, FanInConcat, FanOut, Flatten, Identity, LeakyRelu, Tanh, parallel,
                                         serial)
 
@@ -16,8 +16,7 @@ from experiment import GetModelFn, TrainConfig, get_auxiliary_models, get_counte
 from identifiability_tests import TestResult, evaluate, print_test_results
 from models.conditional_gan import conditional_gan
 from models.conditional_vae import conditional_vae
-from staxplus import Reshape, Resize, StaxLayer, BroadcastTogether
-import tensorflow as tf
+from staxplus import BroadcastTogether, Reshape, Resize, StaxLayer
 
 tf.config.experimental.set_visible_devices([], 'GPU')
 
@@ -181,6 +180,7 @@ def main(job_dir: Path,
          data_config_path: Path,
          model_config_path: Path,
          seeds: List[int],
+         use_realistic_pseduo_oracles: bool = False,
          overwrite: bool = False) -> None:
 
     scenario_name, dataset_name, scenario_unconfounded, scenario = get_data(data_dir, data_config_path)
@@ -201,29 +201,31 @@ def main(job_dir: Path,
                                             train_config=aux_train_config,
                                             overwrite=overwrite)
     # get model
-    exit(1)
     model_name, partial_mechanisms, from_joint, get_model_fn, train_config = get_model(model_config_path)
     experiment_dir = Path(job_dir) / scenario_name / dataset_name / model_name
     results: List[TestResult] = []
-    results_c: List[TestResult] = []
     for seed in seeds:
         seed_dir = experiment_dir / f'seed_{seed:d}'
-        mechanisms = get_counterfactual_fns(job_dir=seed_dir,
-                                    seed=seed,
-                                    scenario=scenario,
-                                    get_model_fn=get_model_fn,
-                                    use_partial_fns=partial_mechanisms,
-                                    pseudo_oracles=pseudo_oracles,
-                                    train_config=train_config,
-                                    from_joint=from_joint,
-                                    overwrite=overwrite)
-        results.append(evaluate(seed_dir, 'results', scenario, mechanisms, pseudo_oracles, overwrite=overwrite))
-        results_c.append(evaluate(seed_dir, 'results_c', scenario, mechanisms, pseudo_oracles_c, overwrite=overwrite))
+        counterfactual_fns = get_counterfactual_fns(job_dir=seed_dir,
+                                                    seed=seed,
+                                                    scenario=scenario,
+                                                    get_model_fn=get_model_fn,
+                                                    use_partial_fns=partial_mechanisms,
+                                                    pseudo_oracles=pseudo_oracles,
+                                                    train_config=train_config,
+                                                    from_joint=from_joint,
+                                                    overwrite=overwrite)
+        if use_realistic_pseduo_oracles:
+            result_file = 'results_c'
+            _pseudo_oracles = pseudo_oracles_c
+        else:
+            result_file = 'results'
+            _pseudo_oracles = pseudo_oracles
+        results.append(evaluate(seed_dir, result_file, scenario,
+                       counterfactual_fns, _pseudo_oracles, overwrite=overwrite))
 
-    print(experiment_dir, 'pseudo oracles')
+    print(experiment_dir)
     print_test_results(results)
-    print(experiment_dir, 'pseudo oracles trained from confounded data')
-    print_test_results(results_c)
 
 
 def list_configs(_dir: Path, files: List[Path]) -> List[Path]:
@@ -253,6 +255,11 @@ if __name__ == '__main__':
     parser.add_argument('--seeds',
                         nargs='+',
                         type=int, help='List of random seeds.')
+    parser.add_argument('--use_realistic_pseduo_oracles',
+                        action='store_true',
+                        help='''whether to evaluate the model using pseudo-oracles trained from confounded data, which is
+                         deconfounded using a simulated intervention, If False, uses pseudo-oracles trained from
+                         data generated without any confounding.''')
     parser.add_argument('--overwrite',
                         action='store_true',
                         help='whether to overwrite an existing run')
@@ -268,5 +275,7 @@ if __name__ == '__main__':
              data_dir=args.data_dir,
              data_config_path=data_config_path,
              model_config_path=model_config_path,
+             seeds=args.seeds,
+             use_realistic_pseduo_oracles=args.use_realistic_pseduo_oracles,
              overwrite=args.overwrite,
-             seeds=args.seeds)
+             )

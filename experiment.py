@@ -43,12 +43,12 @@ def get_auxiliary_models(job_dir: Path,
                          backbone: StaxLayer,
                          train_config: TrainConfig,
                          overwrite: bool,
-                         simulated_intervervention: bool = True) -> Dict[str, AuxiliaryFn]:
+                         use_simulated_intervervention: bool = True) -> Dict[str, AuxiliaryFn]:
     train_datasets, test_dataset_uc, _, parent_dists, input_shape, _ = scenario
     aux_models: Dict[str, AuxiliaryFn] = {}
     for parent_name, parent_dist in parent_dists.items():
         model, get_aux_fn = auxiliary_model(parent_dist, backbone=backbone)
-        target_dist = frozenset((parent_name,)) if simulated_intervervention else frozenset()
+        target_dist = frozenset((parent_name,)) if use_simulated_intervervention else frozenset()
 
         def select_parent(image: Array, parents: Dict[str, Array]) -> Tuple[Array, Array]:
             return image, parents[parent_name]
@@ -103,9 +103,9 @@ def get_counterfactual_fns(job_dir: Path,
     parent_names = list(parent_dists.keys())
     counterfactual_fns: Dict[str, CouterfactualFn] = {}
     for parent_name in (parent_names if use_partial_fns else ['all']):
-        model, get_mechanism_fn = get_model_fn(do_parent_name=parent_name,
-                                               parent_dists=parent_dists,
-                                               pseudo_oracles=pseudo_oracles)
+        model, get_counterfactual_fn = get_model_fn(do_parent_name=parent_name,
+                                                    parent_dists=parent_dists,
+                                                    pseudo_oracles=pseudo_oracles)
 
         train_data, test_data = _prep_data(parent_name, parent_names, from_joint, train_datasets,
                                            test_dataset_uc, batch_size=train_config.batch_size)
@@ -121,7 +121,7 @@ def get_counterfactual_fns(job_dir: Path,
                        eval_every=train_config.eval_every,
                        save_every=train_config.save_every,
                        overwrite=overwrite)
-        counterfactual_fns[parent_name] = get_mechanism_fn(params)
+        counterfactual_fns[parent_name] = get_counterfactual_fn(params)
     counterfactual_fns = {parent_name: counterfactual_fns['all']
                           for parent_name in parent_names} if 'all' in counterfactual_fns else counterfactual_fns
     return counterfactual_fns

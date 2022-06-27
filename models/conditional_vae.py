@@ -66,12 +66,12 @@ def conditional_vae(do_parent_name: str,
         params = optax.apply_updates(params, updates)
         return params, opt_state, loss, outputs
 
-    def get_mechanism_fn(params: Params) -> CouterfactualFn:
-        def mechanism_fn(rng: KeyArray,
-                         image: Array,
-                         parents: Dict[str, Array],
-                         do_parents: Dict[str, Array]) -> Array:
+    def get_counterfactual_fn(params: Params) -> CouterfactualFn:
+        def counterfactual_fn(rng: KeyArray,
+                              image: Array,
+                              parents: Dict[str, Array],
+                              do_parents: Dict[str, Array]) -> Array:
             _, do_image, _ = _apply_fn(params, (image, concat_parents(parents), concat_parents(do_parents)), rng)
             return do_image
-        return mechanism_fn
-    return Model(init_fn, apply_fn, update_fn), get_mechanism_fn
+        return counterfactual_fn
+    return Model(init_fn, apply_fn, update_fn), get_counterfactual_fn
