@@ -79,7 +79,6 @@ def get_dataset(base_data_dir: Path,
     train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_parents))
     test_dataset_uc = tf.data.Dataset.from_tensor_slices((test_images_uc, test_parents_uc))
     test_dataset_c = tf.data.Dataset.from_tensor_slices((test_images_c, test_parents_c))
-
     return train_dataset, test_dataset_uc, test_dataset_c, train_parents
 
 
@@ -189,12 +188,10 @@ def digit_thickness(data_dir: Path, confound: bool, scale: float, outlier_prob: 
         = {'digit': ParentDist(name='digit',
                                dim=10,
                                is_discrete=True,
-                               is_invertible=False,
                                samples=train_parents['digit']),
             'thickness': ParentDist(name='thickness',
                                     dim=1,
                                     is_discrete=False,
-                                    is_invertible=True,
                                     samples=train_parents['thickness'],
                                     oracle=measure_thickness)}
     input_shape = (-1, 28, 28, 1)
@@ -244,18 +241,15 @@ def thickness_hue(data_dir: Path, confound: bool, scale: float, outlier_prob: fl
         = {'digit': ParentDist(name='digit',
                                dim=10,
                                is_discrete=True,
-                               is_invertible=False,
                                samples=train_parents['digit']),
             'thickness': ParentDist(name='thickness',
                                     dim=1,
                                     is_discrete=False,
-                                    is_invertible=True,
                                     samples=train_parents['thickness'],
                                     oracle=measure_thickness),
            'hue': ParentDist(name='hue',
                              dim=1,
                              is_discrete=False,
-                             is_invertible=True,
                              samples=train_parents['hue'],
                              oracle=measure_hue)}
     input_shape = (-1, 28, 28, 3)
@@ -308,12 +302,10 @@ def digit_hue(data_dir: Path, confound: bool, scale: float, outlier_prob: float)
         = {'digit': ParentDist(name='digit',
                                dim=10,
                                is_discrete=True,
-                               is_invertible=False,
                                samples=train_parents['digit']),
            'hue': ParentDist(name='hue',
                              dim=1,
                              is_discrete=False,
-                             is_invertible=True,
                              samples=train_parents['hue'],
                              oracle=measure_hue)}
     input_shape = (-1, 28, 28, 3)
@@ -387,24 +379,26 @@ def digit_hue_saturation(data_dir: Path, confound: bool, scale: float, outlier_p
         = {'digit': ParentDist(name='digit',
                                dim=10,
                                is_discrete=True,
-                               is_invertible=False,
                                samples=train_parents['digit']),
            'hue': ParentDist(name='hue',
                              dim=1,
                              is_discrete=False,
-                             is_invertible=True,
                              samples=train_parents['hue'],
                              oracle=measure_hue),
            'saturation': ParentDist(name='saturation',
                                     dim=1,
                                     is_discrete=False,
-                                    is_invertible=True,
                                     samples=train_parents['saturation'])}
     input_shape = (-1, 28, 28, 3)
     return dataset_name, train_dataset, test_dataset_uc, test_dataset_c, parent_dists, input_shape
 
 
-def confoudned_mnist(scenario_name: str, data_dir: Path, confound: bool, scale: float, outlier_prob: float) \
+def confoudned_mnist(scenario_name: str,
+                     data_dir: Path,
+                     batch_size: int,
+                     confound: bool,
+                     scale: float,
+                     outlier_prob: float) \
         -> Tuple[str, Scenario]:
 
     scenario_fns = {'digit_hue': digit_hue,
@@ -419,29 +413,33 @@ def confoudned_mnist(scenario_name: str, data_dir: Path, confound: bool, scale: 
     dataset_name, train_dataset, test_dataset_uc, test_dataset_c, parent_dists, input_shape \
         = scenario_fn(data_dir, confound, scale, outlier_prob)
 
-    train_data_dict, pmf = get_simulated_intervention_datasets(train_dataset, parent_dists, num_bins=5)
-    if not confound:
-        train_data_dict = {key: train_dataset for key in train_data_dict.keys()}
-
-    def encode(image: tf.Tensor, patents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
+    @tf.function
+    def encode(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
         image = (tf.cast(image, tf.float32) - tf.constant(127.5)) / tf.constant(127.5)
-        patents = {parent: tf.one_hot(value, parent_dists[parent].dim) if parent_dists[parent].is_discrete
-                   else tf.expand_dims(value, axis=-1) for parent, value in patents.items()}
-        return image, patents
+        parents = {parent: tf.one_hot(value, parent_dists[parent].dim) if parent_dists[parent].is_discrete
+                   else tf.expand_dims(value, axis=-1) for parent, value in parents.items()}
+        return image, parents
 
-    # augment_fn = tf.keras.Sequential([
-    #     layers.RandomRotation(factor=(-.1, .1), fill_mode='constant', fill_value=0.),
-    #     layers.RandomTranslation(height_factor=(-.1, .1), width_factor=(-.1, .1), fill_mode='constant', fill_value=0.),
-    #     layers.RandomZoom(height_factor=(-.1, .1), width_factor=(-.1, .1), fill_mode='constant', fill_value=0.)])
-
-    augment_fn = layers.RandomTranslation(
-        height_factor=(-.05, .05), width_factor=(-.1, .1), fill_mode='constant', fill_value=0.)
+    augment_fn = tf.keras.Sequential([
+        layers.RandomTranslation(height_factor=(-.1, .1), width_factor=(-.1, .1), fill_mode='constant', fill_value=-1.),
+        layers.RandomZoom(height_factor=(-.1, .1), width_factor=(-.1, .1), fill_mode='constant', fill_value=-1.)])
 
     def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
         return augment_fn(image), parents
 
-    train_data = tree_map(lambda ds: ds.map(augment).map(encode), train_data_dict)
-    test_data_uc = test_dataset_uc.map(encode)
-    test_data_c = test_dataset_c.map(encode)
+    train_dataset = train_dataset.map(encode, num_parallel_calls=tf.data.AUTOTUNE)
+    train_data_dict, pmf = get_simulated_intervention_datasets(train_dataset, parent_dists, num_bins=5, cache=True)
+    if not confound:
+        train_data_dict = {key: train_dataset.cache() for key in train_data_dict.keys()}
+
+    train_data = tree_map(lambda ds: ds.repeat().
+                          batch(batch_size, drop_remainder=True, num_parallel_calls=tf.data.AUTOTUNE).
+                          map(augment, num_parallel_calls=tf.data.AUTOTUNE).
+                          prefetch(tf.data.AUTOTUNE), train_data_dict)
+
+    test_data_uc = test_dataset_uc.map(encode, num_parallel_calls=tf.data.AUTOTUNE).cache().batch(
+        batch_size, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
+    test_data_c = test_dataset_c.map(encode, num_parallel_calls=tf.data.AUTOTUNE).cache().batch(
+        batch_size, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
 
     return dataset_name, Scenario(train_data, test_data_uc, test_data_c, parent_dists, input_shape, pmf)

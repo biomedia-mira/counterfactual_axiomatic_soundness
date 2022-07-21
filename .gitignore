@@ -3,4 +3,6 @@
 .mypy_cache
 data
 jobs
+side_jobs
+old_jobs
 *.pyc

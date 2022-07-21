@@ -1,4 +1,3 @@
-import itertools
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Optional
 
@@ -69,7 +68,7 @@ def train(model: Model,
     rng = jax.random.PRNGKey(seed)
     params = init_fn(rng, input_shape)
     opt_state = optimizer.init(params)
-    for step, inputs in tqdm(enumerate(itertools.cycle(train_data)), total=num_steps):
+    for step, inputs in tqdm(enumerate(train_data), total=num_steps):
         if step >= num_steps:
             break
         rng, _ = jax.random.split(rng)

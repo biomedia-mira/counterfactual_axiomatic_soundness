@@ -1,0 +1,6 @@
+{
+    "name": "gan",
+    "simulated_intervention": true,
+    "use_composition_constraint": true,
+    "use_reversibility_constraint": false
+}

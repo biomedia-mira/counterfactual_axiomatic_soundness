@@ -1,23 +1,21 @@
 import pickle
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Tuple
 
+import jax.nn
 import jax.random as random
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import tensorflow as tf
-import tensorflow_datasets as tfds
 from jax.tree_util import tree_map
 from numpy.typing import NDArray
 from numpyro.distributions import Bernoulli
 from PIL import Image
-from staxplus import Shape
 from tensorflow.keras import layers  # type: ignore
-from tqdm import tqdm
 from typing_extensions import Protocol
-import jax.nn
+
 from datasets.utils import ParentDist, Scenario, get_simulated_intervention_datasets
 from utils import image_gallery
 
@@ -29,20 +27,25 @@ class ConfoundingFn(Protocol):
         ...
 
 
-def image_thumbs(images: NDArray[np.uint8], parents: Dict[str, NDArray[Any]]) -> NDArray[np.uint8]:
+def save_image_thumbs(path: str, images: NDArray[np.uint8], parents: Dict[str, NDArray[Any]]) -> None:
     order = np.argsort(parents['sequence'], axis=-1)
-    _image = image_gallery(images[order][..., np.newaxis], num_images_to_display=64, ncols=8, decode_fn=lambda x: x)
+    _image = image_gallery(images[order], num_images_to_display=64, ncols=8, decode_fn=lambda x: x)
     _image = np.repeat(_image, repeats=3, axis=-1) if _image.shape[-1] == 1 else _image
-    return _image
+    plt.imsave(path, _image)
+    return
 
 
 def get_dataset(dataset_dir: Path,
                 confound: bool,
-                confounding_fn: ConfoundingFn) -> Tuple[Array, Dict[str, Array], Array, Dict[str, Array]]:
+                confounding_fn: ConfoundingFn,
+                joint_plot_fn: Callable[[Dict[str, Array]], sns.JointGrid]) \
+        -> Tuple[tf.data.Dataset, tf.data.Dataset, tf.data.Dataset, Dict[str, Array]]:
     dataset_path = dataset_dir / 'data.pickle'
     try:
         with open(dataset_path, 'rb') as f1:
-            train_images, train_parents, test_images, test_parents, = pickle.load(f1)
+            (train_images, train_parents,
+             test_images_uc, test_parents_uc,
+             test_images_c, test_parents_c) = pickle.load(f1)
     except FileNotFoundError:
         print('Dataset not found, creating new copy...')
 
@@ -56,7 +59,7 @@ def get_dataset(dataset_dir: Path,
         # clean the data, drop nans and none existing images.
         data = data.dropna()
 
-        def filter_fn(row: pd.Series) -> bool:
+        def filter_fn(row: pd.DataFrame) -> bool:
             return row.loc['t1_path'].exists() and row.loc['t2_flair_path'].exists()
         data = data[data.apply(filter_fn, axis=1)]
         # shuffle and split into train and test
@@ -65,21 +68,39 @@ def get_dataset(dataset_dir: Path,
         train_data, test_data = data.iloc[:s], data.iloc[s:]
 
         train_images, train_parents = confounding_fn(train_data, confound=confound)
-        test_images, test_parents = confounding_fn(test_data, confound=False)
+        test_images_uc, test_parents_uc = confounding_fn(test_data, confound=False)
+        test_images_c, test_parents_c = confounding_fn(test_data, confound=True)
+
         with open(dataset_path, 'wb') as f2:
-            pickle.dump((train_images, train_parents, test_images, test_parents), f2)
-    return train_images, train_parents, test_images, test_parents
+            _data = (train_images, train_parents,
+                     test_images_uc, test_parents_uc,
+                     test_images_c, test_parents_c)
+            pickle.dump(_data, f2)
+
+    joint_plot_fn(train_parents).savefig(dataset_dir / 'joint_hist_train.png')
+    joint_plot_fn(test_parents_uc).savefig(dataset_dir / 'joint_hist_test_unconfounded.png')
+    joint_plot_fn(test_parents_c).savefig(dataset_dir / 'joint_hist_test_confounded.png')
+
+    save_image_thumbs(str(dataset_dir / 'train_images.png'), train_images, train_parents)
+    save_image_thumbs(str(dataset_dir / 'unconfounded_test_images.png'), test_images_uc, test_parents_uc)
+    save_image_thumbs(str(dataset_dir / 'confounded_test_images.png'), test_images_c, test_parents_c)
+
+    train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_parents))
+    test_dataset_uc = tf.data.Dataset.from_tensor_slices((test_images_uc, test_parents_uc))
+    test_dataset_c = tf.data.Dataset.from_tensor_slices((test_images_c, test_parents_c))
+
+    return train_dataset, test_dataset_uc, test_dataset_c, train_parents
 
 
 def read_image(path: Path) -> Array:
     with Image.open(path) as im:
-        return np.array(im)
+        return np.expand_dims(np.array(im), axis=-1)
 
 
 def sequence_age(data_dir: Path, confound: bool, confound_strength: float = 20.) \
-        -> Tuple[str, Array, Dict[str, Array], Array, Dict[str, Array], Dict[str, ParentDist], Shape]:
+        -> Tuple[str, tf.data.Dataset, tf.data.Dataset, tf.data.Dataset, Dict[str, ParentDist]]:
     scenario_name = 'brains/sequence_age'
-    dataset_name = 'confounded' if confound else 'unconfounded'
+    dataset_name = f'confounded_confound_strength_{confound_strength:.1f}' if confound else 'unconfounded'
     dataset_dir = data_dir / scenario_name / dataset_name
     dataset_dir.mkdir(parents=True, exist_ok=True)
     k1, k2 = random.split(random.PRNGKey(1), 2)
@@ -90,7 +111,7 @@ def sequence_age(data_dir: Path, confound: bool, confound_strength: float = 20.)
         sequence = Bernoulli(probs=p).sample(k1)
         return np.array(sequence)
 
-    def joint_plot(parents: Dict[str, NDArray[Any]]) -> sns.JointGrid:
+    def joint_plot_fn(parents: Dict[str, NDArray[Any]]) -> sns.JointGrid:
         data = pd.DataFrame({'sequence': parents['sequence'], 'age': parents['age']})
         grid = sns.JointGrid(x="sequence", y="age", data=data, space=0)
         grid = grid.plot_joint(sns.boxplot, hue=np.zeros_like(data['sequence']),
@@ -107,58 +128,61 @@ def sequence_age(data_dir: Path, confound: bool, confound_strength: float = 20.)
         age = np.array(dataframe['age'])
         _age = age if confound else np.array(random.shuffle(k2, age))
         sequence = sequence_age_model(age=_age)
-        joint_plot({'age': age, 'sequence': sequence}).savefig(dataset_dir / 'this.png')
         images = np.array([read_image(row['t1_path'] if s else row['t2_flair_path'])
                            for s, (_, row) in zip(sequence, dataframe.iterrows())])
         parents = {'age': age, 'sequence': sequence}
         return images, parents
 
-    train_images, train_parents, test_images, test_parents = get_dataset(dataset_dir, confound, confounding_fn)
-
-    joint_plot(train_parents).savefig(dataset_dir / 'joint_hist_train.png')
-    joint_plot(test_parents).savefig(dataset_dir / 'joint_hist_test.png')
-    plt.imsave(str(dataset_dir / 'train_images.png'), image_thumbs(train_images, train_parents))
-    plt.imsave(str(dataset_dir / 'test_images.png'), image_thumbs(test_images, test_parents))
+    train_dataset, test_dataset_uc, test_dataset_c, train_parents = get_dataset(
+        dataset_dir, confound, confounding_fn, joint_plot_fn)
 
     parent_dists \
         = {'sequence': ParentDist(name='sequence',
                                   dim=2,
                                   is_discrete=True,
-                                  is_invertible=False,
                                   samples=train_parents['sequence']),
            'age': ParentDist(name='age',
                              dim=1,
                              is_discrete=False,
-                             is_invertible=True,
                              samples=train_parents['age'])}
-    input_shape = (-1, 28, 28, 3)
-    return dataset_name, train_images, train_parents, test_images, test_parents, parent_dists, input_shape
+
+    return dataset_name, train_dataset, test_dataset_uc, test_dataset_c, parent_dists
 
 
-def brains(data_dir: Path, confound: bool, confound_strength: float) -> Tuple[str, Scenario]:
-
-    dataset_name, train_images, train_parents, test_images, test_parents, parent_dists, input_shape \
+def brains(data_dir: Path, confound: bool, confound_strength: float, batch_size: int) -> Tuple[str, Scenario]:
+    dataset_name, train_dataset, test_dataset_uc, test_dataset_c, parent_dists \
         = sequence_age(data_dir, confound, confound_strength)
 
-    train_dataset = tf.data.Dataset.from_tensor_slices((train_images, train_parents))
-    test_dataset = tf.data.Dataset.from_tensor_slices((test_images, test_parents))
-    train_data_dict, pmf = get_simulated_intervention_datasets(train_dataset, train_parents, parent_dists, num_bins=5)
-    if not confound:
-        train_data_dict = {key: train_dataset for key in train_data_dict.keys()}
-
+    @tf.function
     def encode(image: tf.Tensor, patents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
+        image = tf.image.resize(image[18:214, :196], size=(64, 64))
         image = (tf.cast(image, tf.float32) - tf.constant(127.5)) / tf.constant(127.5)
         patents = {parent: tf.one_hot(value, parent_dists[parent].dim) if parent_dists[parent].is_discrete
                    else tf.expand_dims(value, axis=-1) for parent, value in patents.items()}
         return image, patents
 
-    augment_fn = layers.RandomTranslation(
-        height_factor=(-.05, .05), width_factor=(-.1, .1), fill_mode='constant', fill_value=0.)
+    augment_fn = tf.keras.Sequential([
+        layers.RandomTranslation(height_factor=(-.1, .1), width_factor=(-.1, .1), fill_mode='constant', fill_value=-1.),
+        layers.RandomZoom(height_factor=(-.1, .1), width_factor=(-.1, .1), fill_mode='constant', fill_value=-1.)])
 
+    @tf.function
     def augment(image: tf.Tensor, parents: Dict[str, tf.Tensor]) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
         return augment_fn(image), parents
 
-    train_data = tree_map(lambda ds: ds.map(augment).map(encode), train_data_dict)
-    test_data = test_dataset.map(encode)
+    train_dataset = train_dataset.map(encode, num_parallel_calls=tf.data.AUTOTUNE)
 
-    return dataset_name, Scenario(train_data, test_data, parent_dists, input_shape, pmf)
+    train_data_dict, pmf = get_simulated_intervention_datasets(train_dataset, parent_dists, num_bins=5, cache=True)
+    if not confound:
+        train_data_dict = {key: train_dataset.cache() for key in train_data_dict.keys()}
+
+    train_data = tree_map(lambda ds: ds.repeat().
+                          batch(batch_size, drop_remainder=True, num_parallel_calls=tf.data.AUTOTUNE).
+                          map(augment, num_parallel_calls=tf.data.AUTOTUNE).
+                          prefetch(tf.data.AUTOTUNE), train_data_dict)
+
+    test_data_uc = test_dataset_uc.map(encode, num_parallel_calls=tf.data.AUTOTUNE).cache().batch(
+        batch_size, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
+    test_data_c = test_dataset_c.map(encode, num_parallel_calls=tf.data.AUTOTUNE).cache().batch(
+        batch_size, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
+    input_shape = (-1, 64, 64, 1)
+    return dataset_name, Scenario(train_data, test_data_uc, test_data_c, parent_dists, input_shape, pmf)

@@ -1,25 +1,26 @@
-from enum import Enum
 import itertools
 import pickle
+from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import jax.random as random
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import tensorflow as tf
+import tensorflow_datasets as tfds
+import yaml
 from jax.tree_util import tree_flatten, tree_map, tree_unflatten
 from numpy.typing import NDArray
 from tqdm import tqdm
 
-from datasets.utils import ParentDist, Scenario, PMF
-from experiment import to_numpy_iterator
+from datasets.utils import PMF, ParentDist, Scenario
 from models.utils import AuxiliaryFn, CouterfactualFn
 from staxplus import Array, KeyArray
 from utils import flatten_nested_dict
-import yaml
-import tensorflow as tf
 
 TestResult = Union[Dict[str, Array], Dict[str, 'TestResult']]
 Plots = Union[NDArray[np.uint8], Dict[str, NDArray[np.uint8]]]
@@ -62,7 +63,7 @@ def pseudo_oracle_test(pseudo_oracles: Dict[str, AuxiliaryFn]) -> Test:
 def effectiveness_test(counterfactual_fn: CouterfactualFn,
                        parent_dist: ParentDist,
                        pseudo_oracles: Dict[str, AuxiliaryFn],
-                       joint_pmf: PMF,
+                       joint_pmf: Optional[PMF],
                        _decode_fn: Callable[[Array], Array] = decode_fn,
                        plot_cases_per_row: int = 3,
                        sep_width: int = 1) -> Test:
@@ -74,24 +75,35 @@ def effectiveness_test(counterfactual_fn: CouterfactualFn,
               parents: Dict[str, Array],
               do_parents: Dict[str, Array],
               mode: PlotMode):
-        nrows, ncols = 10, 3 * plot_cases_per_row
+        nrows = 10 if not parent_dist.is_discrete else parent_dist.dim
+        ncols = 3 * plot_cases_per_row
         height, width, channels = image.shape[1:]
-
-        _, binned_parents, _ = joint_pmf(parents)
-        prob, binned_do_parents, dims = joint_pmf(do_parents)
-        parent = binned_parents[parent_name]
-        do_parent = binned_do_parents[parent_name]
-        dim = dims[parent_name]
-
-        ind = [jnp.where(jnp.logical_and(jnp.not_equal(parent, do_parent), do_parent == i))[0] for i in range(dim)]
-        if mode == PlotMode.LOW_DENSITY:
-            ind = [_ind[jnp.argsort(jnp.take(prob, _ind))] for _ind in ind]
-        elif mode == PlotMode.HIGH_DENSITY:
-            ind = [_ind[jnp.argsort(-jnp.take(prob, _ind))] for _ind in ind]
+        dim = parent_dist.dim
+        if joint_pmf is not None:
+            _, binned_parents, _ = joint_pmf(parents)
+            prob, binned_do_parents, _ = joint_pmf(do_parents)
+            parent = binned_parents[parent_name]
+            do_parent = binned_do_parents[parent_name]
+            ind = [jnp.where(jnp.logical_and(jnp.not_equal(parent, do_parent), do_parent == i))[0] for i in range(dim)]
+            if mode == PlotMode.LOW_DENSITY:
+                ind = [_ind[jnp.argsort(jnp.take(prob, _ind))] for _ind in ind]
+            elif mode == PlotMode.HIGH_DENSITY:
+                ind = [_ind[jnp.argsort(-jnp.take(prob, _ind))] for _ind in ind]
+        else:
+            do_parent = jnp.argmax(do_parents[parent_name], axis=-1)
+            parent = jnp.argmax(parents[parent_name], axis=-1)
+            if parent_dist.is_discrete:
+                ind = [jnp.where(jnp.logical_and(jnp.not_equal(parent, do_parent), do_parent == i))[0]
+                       for i in range(dim)]
+            else:
+                ind = jnp.argsort(do_parent, axis=0)
 
         indices = jnp.concatenate([ind[i][:plot_cases_per_row * (nrows // dim)] for i in range(dim)])
         im = _decode_fn(jnp.stack((image, do_nothing, do_image), axis=1))
         im = np.array(jnp.reshape(im[indices], (-1, *image.shape[1:]))).astype(np.uint8)
+        _im = np.zeros((nrows*ncols, height, width, channels), dtype=np.uint8)
+        _im[:len(im)] = im
+        im = _im
         plot = im.reshape((nrows, ncols, height, width, channels)).swapaxes(1, 2).reshape(height * nrows,
                                                                                           width * ncols, channels)
         if sep_width > 0:
@@ -190,23 +202,30 @@ def commutativity_test(counterfactual_fn: Dict[str, CouterfactualFn],
     return test
 
 
-def print_test_results(trees: Iterable[Any]) -> None:
+def format_results(trees: Iterable[Any], summarise: bool = True, print_results: bool = True) -> Dict[str, Any]:
     tree_of_stacks = tree_map(lambda *x: jnp.stack(x), *trees)
-
-    def formatter(_dict: Dict[Any, Any]) -> Dict[Any, Any]:
-        for key, value in _dict.items():
-            if isinstance(value, dict):
-                _dict[key] = formatter(_dict[key])
-            else:
-                if key in ['accuracy', 'absolute_error']:
-                    _dict[key] = value * 100
-        return _dict
-    tree_of_stacks = formatter(tree_of_stacks)
 
     def print_fn(value: Array, precision: str = '.2f') -> str:
         per_seed_mean = jnp.mean(value, axis=-1)
         return f'{jnp.mean(per_seed_mean):{precision}} ({jnp.std(per_seed_mean):{precision}})'
-    print(yaml.dump(tree_map(print_fn, tree_of_stacks), default_flow_style=False))
+
+    def formatter(orignal_dict: Dict[Any, Any], new_dict: Dict[Any, Any]) -> Dict[Any, Any]:
+        for key, value in orignal_dict.items():
+            if isinstance(value, dict):
+                new_dict[key] = {}
+                new_dict[key] = formatter(orignal_dict[key], new_dict[key])
+            else:
+                if summarise and key not in (['accuracy', 'absolute_error', 'distance_1', 'distance_2', 'distance_10']):
+                    continue
+                if key in ['accuracy', 'absolute_error']:
+                    value = value * 100
+                new_dict[key] = print_fn(value)
+        return new_dict
+    formatted_results = formatter(tree_of_stacks, {})
+
+    if print_results:
+        print(yaml.dump(formatted_results, default_flow_style=False))
+    return formatted_results
 
 
 def get_tests(parent_dists: Dict[str, ParentDist],
@@ -216,26 +235,28 @@ def get_tests(parent_dists: Dict[str, ParentDist],
     tests = {}
     tests['pseudo_oracle_quality'] = pseudo_oracle_test(pseudo_oracles)
     for parent_name, parent_dist in parent_dists.items():
+        if parent_name not in counterfactual_fns:
+            continue
         tests[parent_name] = {}
         mechanism_fn = counterfactual_fns[parent_name]
         tests[parent_name]['effectiveness'] = effectiveness_test(mechanism_fn, parent_dist, pseudo_oracles, joint_pmf)
         tests[parent_name]['composition'] = composition_test(mechanism_fn)
-        if parent_dist.is_invertible:
-            tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_dist, num_cycles=5)
+        tests[parent_name]['reversibility'] = reversibility_test(mechanism_fn, parent_dist, num_cycles=5)
     for p1, p2 in itertools.combinations(parent_dists.values(), 2):
+        if p1.name not in counterfactual_fns or p2.name not in counterfactual_fns:
+            continue
         tests[f'{p1.name}_{p2.name}_commutativity'] = commutativity_test(counterfactual_fns, p1, p2)
     return tests
 
 
 def run_tests_on_data(tests: Dict[str, Union[Test, Dict[str, Test]]],
-                      dataset: tf.data.Dataset,
+                      test_set: tf.data.Dataset,
                       num_batches_to_plot: int = 1) -> Tuple[TestResult, Dict[str, NDArray[Any]]]:
     rng = random.PRNGKey(0)
     results: TestResult = {}
     figures: Dict[str, NDArray[Any]] = {}
-    test_set = to_numpy_iterator(dataset, 512, drop_remainder=False)
     plot_counter = 0
-    for image, parents in tqdm(test_set):
+    for image, parents in tqdm(tfds.as_numpy(test_set)):
         rng, _ = jax.random.split(rng)
         res = tree_map(lambda func: func(rng, image, parents), tests, is_leaf=lambda leaf: callable(leaf))
         flat, treedef = tree_flatten(res, is_leaf=lambda x: isinstance(x, tuple))
@@ -249,35 +270,27 @@ def run_tests_on_data(tests: Dict[str, Union[Test, Dict[str, Test]]],
     return results, figures
 
 
-def evaluate(job_dir: Path,
+def evaluate(result_dir: Path,
              scenario: Scenario,
+             test_set: tf.data.Dataset,
              counterfactual_fns: Dict[str, CouterfactualFn],
              pseudo_oracles: Dict[str, AuxiliaryFn],
-             pseudo_oracles_c: Dict[str, AuxiliaryFn],
              num_batches_to_plot: int = 1,
              overwrite: bool = False) -> TestResult:
-    results_path = (job_dir / 'results.pickle')
+    results_path = (result_dir / 'results.pickle')
     if results_path.exists() and not overwrite:
         with open(results_path, mode='rb') as f:
             return pickle.load(f)
     parent_dists, joint_pmf = scenario.parent_dists, scenario.joint_pmf
     assert pseudo_oracles.keys() == parent_dists.keys()
-    tests_uc = get_tests(parent_dists, joint_pmf, pseudo_oracles, counterfactual_fns)
-    tests_c = get_tests(parent_dists, joint_pmf, pseudo_oracles_c, counterfactual_fns)
-    test_set_uc, test_set_c = scenario.test_data_unconfounded, scenario.test_data_confounded
+    tests = get_tests(parent_dists, joint_pmf, pseudo_oracles, counterfactual_fns)
 
-    results = {}
-    for test_set_name, test_set in zip(('unconfounded_test_set', 'confounded_test_set'), (test_set_uc, test_set_c)):
-        results[test_set_name] = {}
-        for pseudo_oracle_name, tests in zip(('pseudo_oracles', 'pseudo_oracles_realistic'), (tests_uc, tests_c)):
-            _results, figures = run_tests_on_data(tests, test_set, num_batches_to_plot)
-            results[test_set_name][pseudo_oracle_name] = _results
-            for figure_name, figure in figures.items():
-                path = job_dir / Path('plots') / Path(test_set_name) / Path(pseudo_oracle_name) / Path(figure_name)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                plt.imsave(str(path), figure)
+    results, figures = run_tests_on_data(tests, test_set, num_batches_to_plot)
+    for figure_name, figure in figures.items():
+        path = result_dir / Path('plots') / Path(figure_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        plt.imsave(str(path), figure)
 
-    with open(job_dir / 'results.pickle', mode='wb') as f:
+    with open(result_dir / 'results.pickle', mode='wb') as f:
         pickle.dump(results, f)
-
     return results
